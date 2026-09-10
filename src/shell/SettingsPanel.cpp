@@ -16,12 +16,12 @@
 
 #include <cinttypes>
 
-#include "clod/GpuProfiler.h"
-#include "clod/unsuck.hpp"
+#include "remo/GpuProfiler.h"
+#include "remo/unsuck.hpp"
 #include "shell/App.h"
 #include "shell/TimingUi.h"
 
-namespace clod {
+namespace remo {
 
 namespace {
 
@@ -77,7 +77,7 @@ void App::drawGui() {
 
 	ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(400, 700), ImGuiCond_FirstUseEver);
-	ImGui::Begin("ClodGen");
+	ImGui::Begin("RemoBench");
 
 	// --- status ------------------------------------------------------------
 	if (!m_status.empty()) {
@@ -108,7 +108,7 @@ void App::drawGui() {
 		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.80f, 0.22f, 0.18f, 1.0f));
 		const bool exitClicked = ImGui::Button("Exit", ImVec2(kExitWidth, 0.0f));
 		ImGui::PopStyleColor(3);
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("quit ClodGen (or press Escape)");
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("quit RemoBench (or press Escape)");
 		if (exitClicked) m_renderer.requestClose();
 	}
 
@@ -180,7 +180,7 @@ void App::drawGui() {
 		ImGui::SameLine();
 		if (ImGui::Button("rescan")) m_datasetsScanned = false;
 		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("re-read %s/ (override with CLODGEN_DATA_DIR)",
+			ImGui::SetTooltip("re-read %s/ (override with REMOBENCH_DATA_DIR)",
 			                  m_datasetDir.c_str());
 		}
 
@@ -371,4 +371,4 @@ void App::drawGui() {
 	ImGui::End();
 }
 
-}  // namespace clod
+}  // namespace remo

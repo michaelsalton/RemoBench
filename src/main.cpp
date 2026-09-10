@@ -1,4 +1,4 @@
-// ClodGen -- a point cloud viewer with swappable LOD generation pipelines.
+// RemoBench -- a point cloud viewer with swappable LOD generation pipelines.
 //
 // Note the command line. Both upstream projects load a cloud ONLY by drag-and-drop
 // onto the window (SimLOD accepts no arguments at all; CudaLOD hardcodes the
@@ -16,8 +16,8 @@
 #include <string>
 #include <vector>
 
-#include "clod/CudaContext.h"
-#include "clod/CudaModularProgram.h"
+#include "remo/CudaContext.h"
+#include "remo/CudaModularProgram.h"
 #include "shell/App.h"
 
 namespace fs = std::filesystem;
@@ -45,8 +45,8 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
                  bool asGroup) {
 	// A CUDA context is required for nvJitLink to query the device architecture, but
 	// no GL context and no window are.
-	clod::CudaContext cuda;
-	printf("clodgen: %s, sm_%d%d\n", cuda.deviceName().c_str(), cuda.ccMajor(),
+	remo::CudaContext cuda;
+	printf("remobench: %s, sm_%d%d\n", cuda.deviceName().c_str(), cuda.ccMajor(),
 	       cuda.ccMinor());
 
 	std::vector<std::vector<std::string>> groups;
@@ -68,7 +68,7 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 		// See kernels/cudalod/programs.txt.
 		std::vector<fs::path> manifests;
 		std::error_code ec;
-		for (fs::recursive_directory_iterator it(clod::kernelRoot(), ec), end;
+		for (fs::recursive_directory_iterator it(remo::kernelRoot(), ec), end;
 		     it != end; it.increment(ec)) {
 			if (ec) break;
 			if (it->is_regular_file(ec) && it->path().filename() == "programs.txt") {
@@ -98,15 +98,15 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 
 		if (groups.empty()) {
 			fprintf(stderr,
-			        "clodgen: no programs.txt found under %s\n"
+			        "remobench: no programs.txt found under %s\n"
 			        "         (a pipeline declares its link groups there)\n",
-			        clod::kernelRoot().c_str());
+			        remo::kernelRoot().c_str());
 			return 1;
 		}
 	}
 
 	if (groups.empty()) {
-		fprintf(stderr, "clodgen: nothing to check\n");
+		fprintf(stderr, "remobench: nothing to check\n");
 		return 1;
 	}
 
@@ -118,17 +118,17 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 			label += fs::path(p).filename().string();
 		}
 
-		clod::KernelProgramDesc desc;
+		remo::KernelProgramDesc desc;
 		desc.modules = group;
 		// No kernel names: this checks that the module COMPILES and LINKS, without
 		// assuming what its entry points are called. A module that links but whose
 		// entry point is misnamed is caught by the pipeline that uses it.
 		desc.kernels = {};
-		desc.linkMode = usePtx ? clod::LinkMode::Ptx : clod::LinkMode::LtoIr;
+		desc.linkMode = usePtx ? remo::LinkMode::Ptx : remo::LinkMode::LtoIr;
 		// No file watching: this is a one-shot check, not a session.
 		desc.watch = false;
 
-		clod::CudaModularProgram program(std::move(desc));
+		remo::CudaModularProgram program(std::move(desc));
 		const bool ok = program.ok();
 		printf("%s  %s\n", ok ? "  ok  " : "FAILED", label.c_str());
 		if (!ok) {
@@ -140,7 +140,7 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 		}
 	}
 
-	printf("clodgen: %zu program(s) from %zu module(s), %d failed (%s)\n",
+	printf("remobench: %zu program(s) from %zu module(s), %d failed (%s)\n",
 	       groups.size(), moduleCount, failures,
 	       usePtx ? "PTX + driver JIT" : "LTOIR + nvJitLink");
 	return failures == 0 ? 0 : 1;
@@ -151,18 +151,18 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 // size) from a script.
 int listDatasets() {
 	std::string dir = "data";
-	if (const char* env = std::getenv("CLODGEN_DATA_DIR")) {
+	if (const char* env = std::getenv("REMOBENCH_DATA_DIR")) {
 		if (*env) dir = env;
 	}
 
-	const std::vector<clod::DatasetEntry> entries = clod::scanDatasetDir(dir);
+	const std::vector<remo::DatasetEntry> entries = remo::scanDatasetDir(dir);
 	if (entries.empty()) {
-		printf("clodgen: no .simlod / .las / .laz found under %s/\n", dir.c_str());
+		printf("remobench: no .simlod / .las / .laz found under %s/\n", dir.c_str());
 		return 1;
 	}
 
 	printf("%-40s %10s %14s  %s\n", "dataset", "size", "points", "status");
-	for (const clod::DatasetEntry& e : entries) {
+	for (const remo::DatasetEntry& e : entries) {
 		char points[32] = "-";
 		if (e.numPoints > 0) snprintf(points, sizeof(points), "%llu",
 		                              static_cast<unsigned long long>(e.numPoints));
@@ -175,9 +175,9 @@ int listDatasets() {
 
 void printUsage() {
 	printf(
-		"clodgen -- point cloud viewer with swappable LOD pipelines\n"
+		"remobench -- point cloud viewer with swappable LOD pipelines\n"
 		"\n"
-		"usage: clodgen [options]\n"
+		"usage: remobench [options]\n"
 		"\n"
 		"  --open <file>       load a .simlod / .las / .laz point cloud\n"
 		"  --synthetic <n>     generate n synthetic points instead\n"
@@ -208,6 +208,10 @@ void printUsage() {
 		"  --strict-timing     synchronise and read CUevents every frame.\n"
 		"                      Accurate but slower; required for benchmarking,\n"
 		"                      since the default reads timings one frame late.\n"
+		"  --remolod-no-accum  build RemoLOD's octree without the per-node accumulator.\n"
+		"                      The pass mutates no tree state, so the structural counts\n"
+		"                      must be identical with it on and off -- that is its\n"
+		"                      acceptance test, and this is what makes it scriptable.\n"
 		"  -h, --help          this message\n"
 		"\n"
 		"Files can also be dropped onto the window.\n");
@@ -217,7 +221,7 @@ void printUsage() {
 // than a silently ignored option.
 bool takeArg(int argc, char** argv, int& i, const char* flag, std::string* out) {
 	if (i + 1 >= argc) {
-		fprintf(stderr, "clodgen: %s needs an argument\n", flag);
+		fprintf(stderr, "remobench: %s needs an argument\n", flag);
 		return false;
 	}
 	*out = argv[++i];
@@ -227,7 +231,7 @@ bool takeArg(int argc, char** argv, int& i, const char* flag, std::string* out) 
 }  // namespace
 
 int main(int argc, char** argv) {
-	clod::AppOptions options;
+	remo::AppOptions options;
 
 	// --check-kernels short-circuits everything else: no window, no cloud.
 	bool checkMode = false;
@@ -287,13 +291,15 @@ int main(int argc, char** argv) {
 			options.hidePoints = true;
 		} else if (arg == "--strict-timing") {
 			options.strictTiming = true;
+		} else if (arg == "--remolod-no-accum") {
+			options.remolodNoAccum = true;
 		} else if (!arg.empty() && arg[0] != '-') {
 			// Bare path: a cloud normally, or a kernel to check in --check-kernels
 			// mode. Note --check-kernels may appear after the path, so this is sorted
 			// out below rather than here.
 			options.files.push_back(arg);
 		} else {
-			fprintf(stderr, "clodgen: unknown option '%s'\n", arg.c_str());
+			fprintf(stderr, "remobench: unknown option '%s'\n", arg.c_str());
 			printUsage();
 			return 2;
 		}
@@ -305,10 +311,10 @@ int main(int argc, char** argv) {
 		return checkKernels(checkPaths, checkPtx, checkAsGroup);
 	}
 
-	clod::App app;
+	remo::App app;
 	std::string err;
 	if (!app.init(options, &err)) {
-		fprintf(stderr, "clodgen: %s\n", err.c_str());
+		fprintf(stderr, "remobench: %s\n", err.c_str());
 		return 1;
 	}
 

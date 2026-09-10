@@ -8,16 +8,17 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
-#include "clod/CudaCheck.h"
-#include "clod/unsuck.hpp"
+#include "remo/CudaCheck.h"
+#include "remo/unsuck.hpp"
 #include "io/LasReader.h"
 #include "pipelines/CudalodPipeline.h"
 #include "pipelines/FlatPipeline.h"
+#include "pipelines/RemolodPipeline.h"
 #include "pipelines/SimlodPipeline.h"
 
 namespace fs = std::filesystem;
 
-namespace clod {
+namespace remo {
 namespace {
 
 // glm is column-major; SharedUniforms::mat4 is row-major (matching how the device
@@ -46,14 +47,14 @@ bool App::init(const AppOptions& options, std::string* err) {
 	m_settings.showBoundingBox = options.showBoundingBox;
 	m_settings.showPoints = !options.hidePoints;
 
-	if (!m_renderer.init("ClodGen", options.width, options.height, err)) {
+	if (!m_renderer.init("RemoBench", options.width, options.height, err)) {
 		return false;
 	}
 
 	// The CUDA context must be created AFTER the GL context, so CUDA-GL interop can
 	// find it.
 	m_cuda = std::make_unique<CudaContext>();
-	printf("clodgen: CUDA on %s, %d SMs, sm_%d%d, %.1f GB free of %.1f GB\n",
+	printf("remobench: CUDA on %s, %d SMs, sm_%d%d, %.1f GB free of %.1f GB\n",
 	       m_cuda->deviceName().c_str(), m_cuda->numSMs(), m_cuda->ccMajor(),
 	       m_cuda->ccMinor(), m_cuda->freeMemory() / 1e9,
 	       m_cuda->totalMemory() / 1e9);
@@ -86,7 +87,7 @@ bool App::init(const AppOptions& options, std::string* err) {
 	if (!loaded) {
 		m_status = loadErr;
 		m_statusIsError = true;
-		fprintf(stderr, "clodgen: %s\n", loadErr.c_str());
+		fprintf(stderr, "remobench: %s\n", loadErr.c_str());
 	}
 
 	return true;
@@ -97,8 +98,24 @@ void App::registerPipelines() {
 	// display name, whether it streams, how much device memory it wants per point --
 	// comes from its own info(), so there is nothing to keep in sync here.
 	//
-	// simlod and cudalod join this list as they land.
+	// Four, in the order they mean something:
+	//   flat     the control condition and image-quality ground truth -- no LOD at all
+	//   remolod  RemoBench's own pipeline, and what the research is about
+	//   cudalod  external comparison, batch build         } vendored byte-identical,
+	//   simlod   external comparison, progressive build   } see bench/check_vendored.sh
+	//
+	// RemoLOD may pull whatever it needs out of the two comparison pipelines, but never
+	// changes them -- they are only worth having while they still reproduce their published
+	// numbers against bench/reference/.
 	m_registry.add([this] { return std::make_unique<FlatPipeline>(*m_cuda); });
+	m_registry.add([this] {
+		auto p = std::make_unique<RemolodPipeline>(*m_cuda);
+		// Applied in the factory, not after construction, because a pipeline is rebuilt from
+		// the factory on every switch -- setting it once at startup would be lost the first
+		// time the user switched away and back.
+		p->setAccumEnabled(!m_options.remolodNoAccum);
+		return p;
+	});
 	m_registry.add([this] { return std::make_unique<CudalodPipeline>(*m_cuda); });
 	m_registry.add([this] { return std::make_unique<SimlodPipeline>(*m_cuda); });
 }
@@ -167,7 +184,7 @@ bool App::loadCloud(const std::vector<std::string>& files, std::string* err) {
 	// Also to stdout, so a script can assert on the count without screen-scraping a
 	// GUI. This is the sort of thing that makes the difference between a viewer and
 	// something a benchmark can drive.
-	printf("clodgen: loaded %s points from %s in %.2fs (%.0f MP/s)\n",
+	printf("remobench: loaded %s points from %s in %.2fs (%.0f MP/s)\n",
 	       formatNumber(static_cast<double>(m_meta.numPoints)).c_str(),
 	       accepted.front().c_str(), elapsed,
 	       static_cast<double>(m_meta.numPoints) / 1e6 / elapsed);
@@ -309,8 +326,8 @@ std::vector<DatasetEntry> scanDatasetDir(const std::string& dir) {
 void App::scanDatasets() {
 	m_datasetsScanned = true;
 
-	// CLODGEN_DATA_DIR lets a scripted run or a different checkout point elsewhere.
-	if (const char* env = std::getenv("CLODGEN_DATA_DIR")) {
+	// REMOBENCH_DATA_DIR lets a scripted run or a different checkout point elsewhere.
+	if (const char* env = std::getenv("REMOBENCH_DATA_DIR")) {
 		if (*env) m_datasetDir = env;
 	}
 
@@ -365,7 +382,7 @@ void App::applyPendingLoad() {
 	if (!ok) {
 		m_status = err;
 		m_statusIsError = true;
-		fprintf(stderr, "clodgen: %s\n", err.c_str());
+		fprintf(stderr, "remobench: %s\n", err.c_str());
 	}
 
 	// The active pipeline may have become unsupported for the new cloud (a big cloud can
@@ -402,7 +419,7 @@ void App::applyPendingPipelineSwitch() {
 		m_statusIsError = true;
 		// Also to stderr: a refused switch is exactly the kind of thing a scripted run
 		// needs to see, and the GUI status line is invisible to one.
-		fprintf(stderr, "clodgen: %s\n", m_status.c_str());
+		fprintf(stderr, "remobench: %s\n", m_status.c_str());
 		return;
 	}
 	m_status = "switched to " + id;
@@ -504,7 +521,7 @@ bool App::dumpFrame(const std::string& path) {
 	const int w = fb.width();
 	const int h = fb.height();
 	if (w <= 0 || h <= 0 || fb.fbo() == 0) {
-		fprintf(stderr, "clodgen: nothing to dump (framebuffer not ready)\n");
+		fprintf(stderr, "remobench: nothing to dump (framebuffer not ready)\n");
 		return false;
 	}
 
@@ -542,7 +559,7 @@ bool App::dumpFrame(const std::string& path) {
 
 	FILE* out = fopen(path.c_str(), "wb");
 	if (!out) {
-		fprintf(stderr, "clodgen: cannot write %s\n", path.c_str());
+		fprintf(stderr, "remobench: cannot write %s\n", path.c_str());
 		return false;
 	}
 	fprintf(out, "P6\n%d %d\n255\n", w, h);
@@ -558,14 +575,14 @@ bool App::dumpFrame(const std::string& path) {
 		fwrite(row.data(), 1, row.size(), out);
 	}
 	fclose(out);
-	printf("clodgen: wrote %s (%dx%d)\n", path.c_str(), w, h);
+	printf("remobench: wrote %s (%dx%d)\n", path.c_str(), w, h);
 
 	// Dump the active pipeline's stats alongside the image, so a scripted run can assert
 	// on structure and timing without screen-scraping the GUI. This is the readout the
 	// benchmark harness will formalise.
 	if (const ILodPipeline* pipeline = m_registry.active()) {
 		const PipelineStats& s = pipeline->stats();
-		printf("clodgen: pipeline=%s\n", m_registry.activeId().c_str());
+		printf("remobench: pipeline=%s\n", m_registry.activeId().c_str());
 		printf("  points              %s\n",
 		       formatNumber(static_cast<double>(s.numPoints)).c_str());
 		printf("  voxels              %s\n",
@@ -581,6 +598,19 @@ bool App::dumpFrame(const std::string& path) {
 		       formatNumber(static_cast<double>(s.numVisibleNodes)).c_str());
 		printf("  max points/node     %s\n",
 		       formatNumber(static_cast<double>(s.maxPointsPerNode)).c_str());
+
+		// Whatever this pipeline alone can report. RemoLOD's accumulator invariants come
+		// through here, which is what makes them assertable from a script rather than only
+		// visible in the panel.
+		for (const std::string& line : pipeline->diagnostics()) {
+			const size_t tab = line.find('\t');
+			if (tab == std::string::npos) {
+				printf("  %s\n", line.c_str());
+			} else {
+				printf("  %-19s %s\n", line.substr(0, tab).c_str(),
+				       line.substr(tab + 1).c_str());
+			}
+		}
 
 		const TimingScopes scopes = pipeline->timingScopes();
 		const BuildTotals build = buildTotals(m_profiler, scopes);
@@ -643,4 +673,4 @@ bool App::dumpFrame(const std::string& path) {
 	return true;
 }
 
-}  // namespace clod
+}  // namespace remo

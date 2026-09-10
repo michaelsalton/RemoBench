@@ -1,15 +1,8 @@
-// Vendored from SimLOD: modules/progressive_octree/progressive_octree_voxels.cu
+// Vendored from SimLOD: progressive_octree/progressive_octree_voxels.cu
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// kernel_construct: inserts up to 20 uploaded 1M-point batches into the LIVE octree per
-// launch, under a 10ms device-side wall-clock budget (%%globaltimer), advancing the
-// persistent cursor stats->batchletIndex. Nothing is rebuilt -- the tree is being
-// rendered while it is still being inserted into.
-//
-// addBatch() is seven phases separated by grid.sync(): expand (doCounting <-> doSplitting
-// until no node overflows) -> voxelSampling -> allocate point chunks -> allocate voxel
-// chunks -> insert points -> insert voxels -> stats.
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 // Some code in this file, particularly frustum, ray and intersection tests, 
 // is adapted from three.js. Three.js is licensed under the MIT license
 // This file this follows the three.js licensing
@@ -26,15 +19,7 @@
 #include "math.cuh"
 #include "structures.cuh"
 
-#include "CudaPrint.cuh"
-
-// ClodGen's accumulator subpass -- NOT upstream. See kernels/simlod/clod_accum.cuh for
-// what it does and plans/03_AccumulatorHook.md sec 2.3 for why it is a separate pass rather
-// than an edit to insertPoints(). The whole footprint in this file is: this include, two
-// file-scope pointers below, two kernel_construct parameters, one call plus grid.sync()
-// in addBatch(), one extra phase in the t_* print, and two counters in the stats pass.
-// No line of upstream algorithm is touched.
-#include "clod_accum.cuh"
+#include "../CudaPrint/CudaPrint.cuh"
 
 namespace cg = cooperative_groups; 
 
@@ -51,11 +36,6 @@ Node** backlog_targets     = nullptr;
 uint32_t* numBacklogVoxels = nullptr;
 Chunk** chunkQueue         = nullptr;
 CudaPrint* cudaprint       = nullptr;
-
-// ADDED (ClodGen). Side array indexed by node index, and the read-back globals. Not
-// fields on Node: it is vendored, 152 bytes, static_asserted, and mirrored host-side.
-NodeAccum* nodeAccums       = nullptr;
-AccumGlobals* accumGlobals  = nullptr;
 
 // https://colorbrewer2.org/#type=diverging&scheme=Spectral&n=8 (byte order inverted)
 uint32_t SPECTRAL[8] = {

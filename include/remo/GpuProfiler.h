@@ -34,7 +34,7 @@
 
 #include <cuda.h>
 
-namespace clod {
+namespace remo {
 
 // How a sample was read back. Recorded per sample and never pooled across the two --
 // see the header comment.
@@ -204,7 +204,7 @@ private:
 //
 //   {
 //       GpuScope s(frame.profiler, "simlod.render");
-//       CLOD_CU(cuLaunchCooperativeKernel(...));
+//       REMO_CU(cuLaunchCooperativeKernel(...));
 //   }
 //
 // Takes a POINTER, not the reference the plan sketched: FrameContext::profiler is
@@ -232,4 +232,4 @@ private:
 	int m_handle;
 };
 
-}  // namespace clod
+}  // namespace remo

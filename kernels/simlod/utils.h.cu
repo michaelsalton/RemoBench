@@ -1,16 +1,8 @@
-// Vendored from SimLOD: modules/progressive_octree/utils.h.cu
+// Vendored from SimLOD: progressive_octree/utils.h.cu
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// processRange, nanotime, and the two bump allocators.
-//
-// Allocator is NON-ATOMIC by design: every thread walks the identical allocation sequence
-// so all threads derive identical pointers with no atomics. It requires uniform control
-// flow, and it has NO capacity and NO bounds check -- which is why upstream's momentary
-// allocator quietly hands out ~409MB from a 300MB buffer. Kept as-is so the ported
-// kernels stay byte-identical and verifiable; the host bounds the damage by sizing the
-// buffers from the actual allocation sum. Our own kernels use
-// kernels/shared/clod_alloc.cuh, which does check.
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 
 #pragma once
 

@@ -11,7 +11,7 @@
 // measuring laszip.
 //
 // It is an IMPORTER, not a format to build on. Three defects rule it out as our own
-// cache format, and a `.clod` replacement should fix all three:
+// cache format, and a `.remo` replacement should fix all three:
 //   - the bbox is float32, so it cannot round-trip real geo coordinates;
 //   - the applied translation is not recorded anywhere, so original coordinates are
 //     unrecoverable;
@@ -23,13 +23,13 @@
 #include <string>
 #include <vector>
 
-#include "clod/PointSource.h"
+#include "remo/PointSource.h"
 
-namespace clod {
+namespace remo {
 
 // Fills meta.numPoints and meta.box*Orig, and reads all points. Coordinates are
 // returned as stored -- the caller applies the translation.
 bool readSimlod(const std::string& path, CloudMeta& meta,
                 std::vector<Point>& points, std::string* err);
 
-}  // namespace clod
+}  // namespace remo

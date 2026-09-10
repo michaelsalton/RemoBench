@@ -1,8 +1,8 @@
-// Vendored from SimLOD: modules/progressive_octree/helper_math.h
+// Vendored from SimLOD: progressive_octree/helper_math.h
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// NVIDIA's CUDA-samples float2/3/4 operator header. Vendored verbatim; do not edit.
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 /* Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without

@@ -2,9 +2,9 @@
 
 #include <imgui.h>
 
-#include "clod/GpuProfiler.h"
+#include "remo/GpuProfiler.h"
 
-namespace clod {
+namespace remo {
 namespace {
 
 void emit(const char* label, const ScopeStats* stats) {
@@ -35,4 +35,4 @@ void timingRow(const GpuProfiler& profiler, const char* label,
 
 void timingRow(const char* label, const ScopeStats& stats) { emit(label, &stats); }
 
-}  // namespace clod
+}  // namespace remo

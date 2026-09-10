@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
-project(clodgen LANGUAGES C CXX)
+project(remobench LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
-# ClodGen -- a point cloud viewer with swappable LOD generation pipelines.
+# RemoBench -- a point cloud viewer with swappable LOD generation pipelines.
 #
 # THE PROVENANCE RULE, worth reading before adding an include directory:
 #
-#   clodgen may reference external/*/libs/** only. It must never #include a file
+#   remobench may reference external/*/libs/** only. It must never #include a file
 #   that patches/*.patch modifies.
 #
 # The two research submodules (external/SimLOD, external/CudaLOD) are patched at
@@ -34,13 +34,13 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-include(clodgen_deps)
-include(clodgen_kernels)
+include(remobench_deps)
+include(remobench_kernels)
 
 # ---------------------------------------------------------------------------
-# clodgen
+# remobench
 # ---------------------------------------------------------------------------
-add_executable(clodgen
+add_executable(remobench
 	src/main.cpp
 	src/platform/unsuck_platform_specific.cpp
 	src/cuda/CudaCheck.cpp
@@ -58,32 +58,33 @@ add_executable(clodgen
 	src/io/LasReader.cpp
 	src/io/LazReader.cpp
 	src/pipelines/FlatPipeline.cpp
+	src/pipelines/RemolodPipeline.cpp
 	src/pipelines/CudalodPipeline.cpp
 	src/pipelines/SimlodPipeline.cpp)
 
-target_include_directories(clodgen PRIVATE include src)
+target_include_directories(remobench PRIVATE include src)
 
-target_link_libraries(clodgen PRIVATE clodgen_deps)
+target_link_libraries(remobench PRIVATE remobench_deps)
 
 # Our own code we do keep warning-clean. Third-party sources are isolated in the
-# clodgen_thirdparty target, which is built with -w.
-target_compile_options(clodgen PRIVATE -Wall -Wextra)
+# remobench_thirdparty target, which is built with -w.
+target_compile_options(remobench PRIVATE -Wall -Wextra)
 
-clodgen_link_kernels(clodgen)
+remobench_link_kernels(remobench)
 
 # ---------------------------------------------------------------------------
 # Tests (Catch2 v3, optional -- absent on a fresh machine)
 # ---------------------------------------------------------------------------
-option(CLODGEN_BUILD_TESTS "Build the test suite" OFF)
+option(REMOBENCH_BUILD_TESTS "Build the test suite" OFF)
 
-if (CLODGEN_BUILD_TESTS)
+if (REMOBENCH_BUILD_TESTS)
 	find_package(Catch2 3 QUIET)
 	if (Catch2_FOUND)
 		enable_testing()
 		add_subdirectory(tests)
 	else ()
 		message(STATUS
-			"clodgen: Catch2 v3 not found, skipping tests "
+			"remobench: Catch2 v3 not found, skipping tests "
 			"(sudo apt install catch2)")
 	endif ()
 endif ()

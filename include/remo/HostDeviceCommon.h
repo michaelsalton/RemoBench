@@ -43,7 +43,7 @@ using cuda::std::uint8_t;
 #include <cstdint>
 #endif
 
-namespace clod {
+namespace remo {
 
 // ---------------------------------------------------------------------------
 // Point format
@@ -110,7 +110,7 @@ struct SharedUniforms {
 	// cut, and every render-side measurement is quietly incomparable.
 	//
 	// The two native metrics remain selectable per pipeline at NVRTC compile time
-	// (CLOD_LOD_SIMLOD_NATIVE / CLOD_LOD_CUDALOD_NATIVE) so a port can be
+	// (REMO_LOD_SIMLOD_NATIVE / REMO_LOD_CUDALOD_NATIVE) so a port can be
 	// validated against its published behaviour before being switched over.
 	float lodPixelBudget;  // default 128.0
 	float minNodeSize;     // SimLOD-native fallback, world units
@@ -185,4 +185,4 @@ struct DeviceDiagnostics {
 	uint64_t drawSamples;
 };
 
-}  // namespace clod
+}  // namespace remo

@@ -29,14 +29,14 @@
 //      published numbers.
 //
 // Option 3 works precisely because sharing here is textual (#include), so templates
-// specialise per pipeline with no dispatch. See clod_pipeline.cuh.
+// specialise per pipeline with no dispatch. See remo_pipeline.cuh.
 // ---------------------------------------------------------------------------
 
 #pragma once
 
-#include "shared/clod_framebuffer.cuh"
+#include "shared/remo_framebuffer.cuh"
 
-namespace clod {
+namespace remo {
 
 // Opaque handle to one node's samples. The pipeline's Walker knows how to read it.
 struct SampleSource {
@@ -84,7 +84,7 @@ struct DrawItem {
 // (ox << 2) | (oy << 1) | oz, i.e. exactly reversed, and using its slot index directly as
 // a mask bit masks the WRONG octants. The symptom is not a crash but large holes in the
 // render, with the LOD structure itself provably correct.
-inline uint32_t clodOctantOf(const DrawItem& item, float x, float y, float z) {
+inline uint32_t remoOctantOf(const DrawItem& item, float x, float y, float z) {
 	const float half = item.nodeSize * 0.5f;
 	const uint32_t ix = x >= item.nodeMin.x + half ? 1u : 0u;
 	const uint32_t iy = y >= item.nodeMin.y + half ? 1u : 0u;
@@ -95,15 +95,15 @@ inline uint32_t clodOctantOf(const DrawItem& item, float x, float y, float z) {
 struct DrawList {
 	DrawItem* items;
 	uint32_t* numItems;   // written by the pipeline's selection pass
-	uint32_t capacity;    // bounds-checked on append; see clodDrawListAppend
+	uint32_t capacity;    // bounds-checked on append; see remoDrawListAppend
 	uint32_t* overflowed; // set if selection produced more nodes than capacity
 };
 
 // Allocate a draw list from per-launch scratch.
 //
 // Uniform control flow: every thread must reach this, in this order. See the banner in
-// clod_alloc.cuh.
-inline DrawList clodAllocDrawList(ClodAllocator& alloc, uint32_t capacity) {
+// remo_alloc.cuh.
+inline DrawList remoAllocDrawList(RemoAllocator& alloc, uint32_t capacity) {
 	DrawList list;
 	list.items = alloc.alloc<DrawItem*>(sizeof(DrawItem) * uint64_t(capacity));
 	list.numItems = alloc.alloc<uint32_t*>(4);
@@ -112,7 +112,7 @@ inline DrawList clodAllocDrawList(ClodAllocator& alloc, uint32_t capacity) {
 	return list;
 }
 
-inline void clodResetDrawList(const DrawList& list) {
+inline void remoResetDrawList(const DrawList& list) {
 	auto grid = cg::this_grid();
 	if (grid.thread_rank() == 0) {
 		*list.numItems = 0u;
@@ -126,7 +126,7 @@ inline void clodResetDrawList(const DrawList& list) {
 // nodes silently -- a truncated draw list means fewer samples drawn, which would show
 // up as a suspiciously fast frame and a subtly wrong image. Upstream's equivalent
 // scratch array has a fixed 100'000-entry capacity and no check at all.
-inline bool clodDrawListAppend(const DrawList& list, const DrawItem& item) {
+inline bool remoDrawListAppend(const DrawList& list, const DrawItem& item) {
 	const uint32_t index = atomicAdd(list.numItems, 1u);
 	if (index >= list.capacity) {
 		*list.overflowed = 1u;
@@ -141,7 +141,7 @@ inline bool clodDrawListAppend(const DrawList& list, const DrawItem& item) {
 // ---------------------------------------------------------------------------
 
 // Samples in one contiguous Point array. CudaLOD's leaves and voxel arrays.
-struct ClodContiguousWalker {
+struct RemoContiguousWalker {
 	// fn(index, Point) for a strided subset of the samples, so a whole block can
 	// cooperate on one node.
 	template <typename Fn>
@@ -173,7 +173,7 @@ struct ClodContiguousWalker {
 // Templated rather than hardcoded so each pipeline's Chunk stays byte-identical to
 // upstream.
 template <typename ChunkT, uint32_t Capacity>
-struct ClodChunkedWalker {
+struct RemoChunkedWalker {
 	template <typename Fn>
 	static void forEachStrided(const SampleSource& source, uint32_t offset,
 	                           uint32_t stride, Fn&& fn) {
@@ -194,7 +194,7 @@ struct ClodChunkedWalker {
 
 			for (uint32_t slot = delta; slot < inChunk; slot += stride) {
 				// The chunk's element type is the PIPELINE's Point, a distinct type from
-				// clod::Point even though the two are layout-identical (asserted in each
+				// remo::Point even though the two are layout-identical (asserted in each
 				// pipeline's render kernel). Cast, exactly as the contiguous walker does
 				// when it reinterprets source.head -- otherwise every pipeline would have
 				// to template its callback on its own point type.
@@ -212,15 +212,15 @@ struct ClodChunkedWalker {
 // Rasterise a draw list
 // ---------------------------------------------------------------------------
 
-inline uint32_t clodSampleColor(const SharedUniforms& u, const DrawItem& item,
+inline uint32_t remoSampleColor(const SharedUniforms& u, const DrawItem& item,
                                 uint32_t sampleColor) {
 	switch (u.colorMode) {
 		case COLOR_WHITE:
 			return 0xFFFFFFFFu;
 		case COLOR_BY_NODE:
-			return clodHashColor(item.nodeKey);
+			return remoHashColor(item.nodeKey);
 		case COLOR_BY_LOD:
-			return clodHashColor(item.level * 2654435761ull);
+			return remoHashColor(item.level * 2654435761ull);
 		default:
 			return sampleColor;
 	}
@@ -237,7 +237,7 @@ inline uint32_t clodSampleColor(const SharedUniforms& u, const DrawItem& item,
 // store leaf points and inner-node voxels differently -- SimLOD in fact does, using
 // separate chunk lists for each.
 template <typename PointWalker, typename VoxelWalker>
-void clodRasterizeDrawList(const DrawList& list, uint64_t* fb,
+void remoRasterizeDrawList(const DrawList& list, uint64_t* fb,
                            const SharedUniforms& u) {
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
@@ -273,8 +273,8 @@ void clodRasterizeDrawList(const DrawList& list, uint64_t* fb,
 
 		PointWalker::forEachStrided(
 			item.points, lane, stride, [&](uint32_t, const Point& p) {
-				clodDrawPoint(fb, u, p.x, p.y, p.z,
-				              clodSampleColor(u, item, p.color));
+				remoDrawPoint(fb, u, p.x, p.y, p.z,
+				              remoSampleColor(u, item, p.color));
 			});
 
 		// The mask test is DrawItem-uniform, hence block-uniform here, so this branch
@@ -283,16 +283,16 @@ void clodRasterizeDrawList(const DrawList& list, uint64_t* fb,
 		if (item.voxelOctantMask == 0xFFu) {
 			VoxelWalker::forEachStrided(
 				item.voxels, lane, stride, [&](uint32_t, const Point& p) {
-					clodDrawPoint(fb, u, p.x, p.y, p.z,
-					              clodSampleColor(u, item, p.color));
+					remoDrawPoint(fb, u, p.x, p.y, p.z,
+					              remoSampleColor(u, item, p.color));
 				});
 		} else if (item.voxelOctantMask != 0u) {
 			VoxelWalker::forEachStrided(
 				item.voxels, lane, stride, [&](uint32_t, const Point& p) {
-					const uint32_t octant = clodOctantOf(item, p.x, p.y, p.z);
+					const uint32_t octant = remoOctantOf(item, p.x, p.y, p.z);
 					if ((item.voxelOctantMask & (1u << octant)) == 0u) return;
-					clodDrawPoint(fb, u, p.x, p.y, p.z,
-					              clodSampleColor(u, item, p.color));
+					remoDrawPoint(fb, u, p.x, p.y, p.z,
+					              remoSampleColor(u, item, p.color));
 				});
 		}
 	}
@@ -300,13 +300,13 @@ void clodRasterizeDrawList(const DrawList& list, uint64_t* fb,
 
 // Convenience for pipelines whose points and voxels share one storage layout.
 template <typename Walker>
-void clodRasterizeDrawList(const DrawList& list, uint64_t* fb,
+void remoRasterizeDrawList(const DrawList& list, uint64_t* fb,
                            const SharedUniforms& u) {
-	clodRasterizeDrawList<Walker, Walker>(list, fb, u);
+	remoRasterizeDrawList<Walker, Walker>(list, fb, u);
 }
 
 // Total samples referenced by the list, for the stats panel's "visible samples".
-inline void clodCountDrawList(const DrawList& list, uint64_t* outPoints,
+inline void remoCountDrawList(const DrawList& list, uint64_t* outPoints,
                               uint64_t* outVoxels) {
 	const uint32_t numItems = *list.numItems < list.capacity ? *list.numItems
 	                                                         : list.capacity;
@@ -318,4 +318,4 @@ inline void clodCountDrawList(const DrawList& list, uint64_t* outPoints,
 	});
 }
 
-}  // namespace clod
+}  // namespace remo

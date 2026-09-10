@@ -37,10 +37,10 @@
 #include <memory>
 #include <string>
 
-#include "clod/CudaModularProgram.h"
-#include "clod/ILodPipeline.h"
+#include "remo/CudaModularProgram.h"
+#include "remo/ILodPipeline.h"
 
-namespace clod {
+namespace remo {
 
 class CudaContext;
 
@@ -114,4 +114,4 @@ private:
 	uint64_t m_allocatedVoxelization = 0;
 };
 
-}  // namespace clod
+}  // namespace remo

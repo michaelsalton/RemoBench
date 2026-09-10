@@ -12,20 +12,20 @@
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
 
-#include "clod/unsuck.hpp"
+#include "remo/unsuck.hpp"
 
-namespace clod {
+namespace remo {
 namespace {
 
 void glfwErrorCallback(int code, const char* description) {
-	fprintf(stderr, "clodgen: glfw error %d: %s\n", code, description);
+	fprintf(stderr, "remobench: glfw error %d: %s\n", code, description);
 }
 
 void APIENTRY glDebugCallback(GLenum /*source*/, GLenum type, GLuint /*id*/,
                               GLenum severity, GLsizei /*length*/,
                               const GLchar* message, const void* /*user*/) {
 	if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
-	fprintf(stderr, "clodgen: GL %s: %s\n",
+	fprintf(stderr, "remobench: GL %s: %s\n",
 	        type == GL_DEBUG_TYPE_ERROR ? "error" : "message", message);
 }
 
@@ -121,9 +121,9 @@ bool GLRenderer::init(const std::string& title, int width, int height,
 
 	// Default to X11/XWayland. CUDA-GL interop with the proprietary driver has
 	// historically been fragile on native Wayland, and GLFW's drag-and-drop and
-	// cursor handling differ there too. Override with CLODGEN_GLFW_PLATFORM=wayland.
+	// cursor handling differ there too. Override with REMOBENCH_GLFW_PLATFORM=wayland.
 #ifdef GLFW_PLATFORM
-	const char* platform = std::getenv("CLODGEN_GLFW_PLATFORM");
+	const char* platform = std::getenv("REMOBENCH_GLFW_PLATFORM");
 	if (!platform || std::string(platform) == "x11") {
 		if (glfwPlatformSupported(GLFW_PLATFORM_X11)) {
 			glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
@@ -188,7 +188,7 @@ bool GLRenderer::init(const std::string& title, int width, int height,
 	m_lastFrameTime = now();
 	m_fpsWindowStart = m_lastFrameTime;
 
-	printf("clodgen: GL %s on %s\n", glGetString(GL_VERSION),
+	printf("remobench: GL %s on %s\n", glGetString(GL_VERSION),
 	       glGetString(GL_RENDERER));
 	return true;
 }
@@ -317,4 +317,4 @@ void GLRenderer::dropCallback(GLFWwindow* window, int count,
 	for (auto& cb : self->m_dropCallbacks) cb(files);
 }
 
-}  // namespace clod
+}  // namespace remo

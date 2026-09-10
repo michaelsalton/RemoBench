@@ -6,9 +6,9 @@
 // allocators here have no bounds checks either, silent failure is the last thing
 // this project needs.
 //
-//   CLOD_CU(expr)      -- log with file/line/name, return the CUresult
-//   CLOD_CU_OK(expr)   -- as above, evaluates to true on success
-//   CLOD_CU_FATAL(expr)-- log and abort; only for genuinely unrecoverable setup
+//   REMO_CU(expr)      -- log with file/line/name, return the CUresult
+//   REMO_CU_OK(expr)   -- as above, evaluates to true on success
+//   REMO_CU_FATAL(expr)-- log and abort; only for genuinely unrecoverable setup
 
 #pragma once
 
@@ -17,7 +17,7 @@
 
 #include <cuda.h>
 
-namespace clod {
+namespace remo {
 
 // Driver error enum -> symbolic name. cuGetErrorName can itself fail (e.g. before
 // cuInit), so fall back to the numeric code rather than returning nullptr.
@@ -38,7 +38,7 @@ inline const char* cuErrorString(CUresult result) {
 inline CUresult cuCheckImpl(CUresult result, const char* expr, const char* file,
                             int line) {
 	if (result != CUDA_SUCCESS) {
-		fprintf(stderr, "clodgen: CUDA error %s at %s:%d\n  %s\n  %s\n",
+		fprintf(stderr, "remobench: CUDA error %s at %s:%d\n  %s\n  %s\n",
 		        cuErrorName(result), file, line, expr, cuErrorString(result));
 	}
 	return result;
@@ -46,7 +46,7 @@ inline CUresult cuCheckImpl(CUresult result, const char* expr, const char* file,
 
 [[noreturn]] inline void cuFatal(CUresult result, const char* expr,
                                  const char* file, int line) {
-	fprintf(stderr, "clodgen: fatal CUDA error %s at %s:%d\n  %s\n  %s\n",
+	fprintf(stderr, "remobench: fatal CUDA error %s at %s:%d\n  %s\n  %s\n",
 	        cuErrorName(result), file, line, expr, cuErrorString(result));
 	std::abort();
 }
@@ -84,15 +84,15 @@ inline bool isStickyError(CUresult result) {
 // stack trace will not tell you which kernel it was.
 [[noreturn]] void reportDeadContextAndExit(CUresult result, const char* what);
 
-}  // namespace clod
+}  // namespace remo
 
-#define CLOD_CU(expr) ::clod::cuCheckImpl((expr), #expr, __FILE__, __LINE__)
+#define REMO_CU(expr) ::remo::cuCheckImpl((expr), #expr, __FILE__, __LINE__)
 
-#define CLOD_CU_OK(expr) (CLOD_CU(expr) == CUDA_SUCCESS)
+#define REMO_CU_OK(expr) (REMO_CU(expr) == CUDA_SUCCESS)
 
-#define CLOD_CU_FATAL(expr)                                            \
+#define REMO_CU_FATAL(expr)                                            \
 	do {                                                               \
-		CUresult _clod_r = (expr);                                     \
-		if (_clod_r != CUDA_SUCCESS)                                   \
-			::clod::cuFatal(_clod_r, #expr, __FILE__, __LINE__);       \
+		CUresult _remo_r = (expr);                                     \
+		if (_remo_r != CUDA_SUCCESS)                                   \
+			::remo::cuFatal(_remo_r, #expr, __FILE__, __LINE__);       \
 	} while (0)

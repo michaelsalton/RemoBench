@@ -6,7 +6,7 @@
 
 namespace fs = std::filesystem;
 
-namespace clod {
+namespace remo {
 
 namespace {
 constexpr uint64_t kHeaderBytes = 24;
@@ -91,4 +91,4 @@ bool readSimlod(const std::string& path, CloudMeta& meta,
 	return true;
 }
 
-}  // namespace clod
+}  // namespace remo

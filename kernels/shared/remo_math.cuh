@@ -9,9 +9,9 @@
 
 #pragma once
 
-#include "shared/clod_prelude.cuh"
+#include "shared/remo_prelude.cuh"
 
-namespace clod {
+namespace remo {
 
 struct float4v {
 	float x, y, z, w;
@@ -19,7 +19,7 @@ struct float4v {
 
 // Row-major, matching SharedUniforms::mat4. The host transposes glm's
 // column-major matrices on the way in.
-inline float4v clodMatMul(const mat4& m, float x, float y, float z, float w) {
+inline float4v remoMatMul(const mat4& m, float x, float y, float z, float w) {
 	float4v r;
 	r.x = m.rows[0][0] * x + m.rows[0][1] * y + m.rows[0][2] * z + m.rows[0][3] * w;
 	r.y = m.rows[1][0] * x + m.rows[1][1] * y + m.rows[1][2] * z + m.rows[1][3] * w;
@@ -30,10 +30,10 @@ inline float4v clodMatMul(const mat4& m, float x, float y, float z, float w) {
 
 // Project a world position to pixel coordinates. Returns false if the point is
 // behind or on the near plane, in which case pixel/depth are not written.
-inline bool clodProject(const mat4& transform, float x, float y, float z,
+inline bool remoProject(const mat4& transform, float x, float y, float z,
                         float width, float height, float& outX, float& outY,
                         float& outDepth) {
-	const float4v clip = clodMatMul(transform, x, y, z, 1.0f);
+	const float4v clip = remoMatMul(transform, x, y, z, 1.0f);
 	if (clip.w <= 0.0f) return false;
 
 	const float invW = 1.0f / clip.w;
@@ -44,7 +44,7 @@ inline bool clodProject(const mat4& transform, float x, float y, float z,
 	outY = (ndcY * 0.5f + 0.5f) * height;
 	// Linear eye-space depth. Used directly as the atomicMin key, so it must be
 	// monotonically increasing with distance and non-negative -- see
-	// clod_framebuffer.cuh on why the float bit pattern compares correctly.
+	// remo_framebuffer.cuh on why the float bit pattern compares correctly.
 	outDepth = clip.w;
 	return true;
 }
@@ -95,4 +95,4 @@ struct Frustum {
 	}
 };
 
-}  // namespace clod
+}  // namespace remo

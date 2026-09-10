@@ -1,11 +1,11 @@
-#include "clod/GpuProfiler.h"
+#include "remo/GpuProfiler.h"
 
 #include <algorithm>
 #include <cmath>
 
-#include "clod/CudaCheck.h"
+#include "remo/CudaCheck.h"
 
-namespace clod {
+namespace remo {
 
 const char* regimeName(Regime regime) {
 	return regime == Regime::Strict ? "strict" : "deferred";
@@ -293,4 +293,4 @@ void GpuProfiler::clearPrefix(const std::string& prefix) {
 	}
 }
 
-}  // namespace clod
+}  // namespace remo

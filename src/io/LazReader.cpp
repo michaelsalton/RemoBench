@@ -24,7 +24,7 @@
 
 #include "laszip_api.h"
 
-namespace clod {
+namespace remo {
 
 namespace {
 
@@ -123,7 +123,7 @@ bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
 		}
 
 		if (i >= nextReport) {
-			printf("\rclodgen: decoding %s ... %3.0f%%",
+			printf("\rremobench: decoding %s ... %3.0f%%",
 			       path.c_str(),
 			       100.0 * static_cast<double>(i) /
 			           static_cast<double>(info.numPoints));
@@ -144,4 +144,4 @@ bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
 	return true;
 }
 
-}  // namespace clod
+}  // namespace remo

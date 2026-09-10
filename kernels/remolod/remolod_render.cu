@@ -1,10 +1,12 @@
-// SimLOD's LOD selection, RemoBench's shared rasteriser.
+// RemoLOD's LOD selection, RemoBench's shared rasteriser.
 //
-// Replaces upstream's render.cu (1356 lines). Only the SELECTION half is ported, because
-// that is the part under study; everything after it -- projection, splatting, the packed
-// uint64 atomicMin depth test, EDL, the surface resolve -- comes from kernels/shared and is
-// identical to every other pipeline. See kernels/cudalod/cudalod_render.cu for the same
-// split on the other side of the comparison.
+// FORKED from kernels/simlod/simlod_render.cu, which is itself RemoBench's port of SimLOD's
+// selection pass. This copy is RemoLOD's to evolve -- once Analysis writes per-node scores,
+// selection is where they get spent, and that is a change SimLOD's baseline must not see.
+//
+// IDENTICAL TO THE SIMLOD ONE TODAY apart from the includes and the scope name. While it
+// stays that way, a difference between the two pipelines' images is attributable to
+// construction rather than to selection.
 //
 // WHAT MAKES SIMLOD'S SELECTION DIFFERENT, and why it needs no octant mask:
 //
@@ -21,15 +23,14 @@
 // Node bounds are not stored: SimLOD keeps integer grid coordinates (level, X, Y, Z) and
 // recomputes world bounds on the fly, which is what nodeBounds() below does.
 
-#include "utils.h.cu"
-#include "builtin_types.h"
-#include "helper_math.h"
-#include "HostDeviceInterface.h"
-#include "math.cuh"
-#include "structures.cuh"
-#include "../CudaPrint/CudaPrint.cuh"
 
-#include "simlod_bridge.cuh"
+#include "../simlod/utils.h.cu"
+#include "builtin_types.h"
+#include "../simlod/helper_math.h"
+#include "../simlod/HostDeviceInterface.h"
+#include "../simlod/math.cuh"
+#include "remolod_structures.cuh"
+#include "../CudaPrint/CudaPrint.cuh"
 
 #include "shared/remo_pipeline.cuh"
 
@@ -51,7 +52,7 @@ static_assert(sizeof(Point) == sizeof(remo::Point),
 // samples are contiguous slices instead.
 using SimlodWalker = remo::RemoChunkedWalker<Chunk, POINTS_PER_CHUNK>;
 
-constexpr uint32_t SIMLOD_DRAWLIST_CAPACITY = 131072;
+constexpr uint32_t REMOLOD_DRAWLIST_CAPACITY = 131072;
 
 struct NodeBounds {
 	float3 min;
@@ -119,13 +120,13 @@ extern "C" __global__ void kernel_render(RenderArgs args, Node* nodes, Stats* st
 	const uint64_t numPixels =
 		static_cast<uint64_t>(u.width) * static_cast<uint64_t>(u.height);
 	uint64_t* framebuffer = alloc.alloc<uint64_t*>(8ull * numPixels);
-	DrawList drawList = remo::remoAllocDrawList(alloc, SIMLOD_DRAWLIST_CAPACITY);
+	DrawList drawList = remo::remoAllocDrawList(alloc, REMOLOD_DRAWLIST_CAPACITY);
 	// Per-node flags, mirroring upstream's node->visible / node->isLarge. Kept in scratch
 	// rather than written back into the Node, so selection never mutates the tree that the
 	// construct kernel owns -- upstream writes into the live nodes, which makes rendering
 	// and construction race on the same memory.
-	uint8_t* visibleFlags = alloc.alloc<uint8_t*>(REMO_SIMLOD_MAX_NODES);
-	uint8_t* largeFlags = alloc.alloc<uint8_t*>(REMO_SIMLOD_MAX_NODES);
+	uint8_t* visibleFlags = alloc.alloc<uint8_t*>(MAX_NODES_CAPACITY);
+	uint8_t* largeFlags = alloc.alloc<uint8_t*>(MAX_NODES_CAPACITY);
 	// Total samples the emitted items reference. Answers "did selection emit items that
 	// actually point at data" separately from "can the walker read them".
 	uint64_t* sampleCount = alloc.alloc<uint64_t*>(8);
@@ -141,7 +142,7 @@ extern "C" __global__ void kernel_render(RenderArgs args, Node* nodes, Stats* st
 	grid.sync();
 
 	uint32_t numNodes = stats->numNodes;
-	if (numNodes > REMO_SIMLOD_MAX_NODES) numNodes = REMO_SIMLOD_MAX_NODES;
+	if (numNodes > MAX_NODES_CAPACITY) numNodes = MAX_NODES_CAPACITY;
 	if (numNodes == 0u) {
 		grid.sync();
 		remo::remoResolve(framebuffer, u,

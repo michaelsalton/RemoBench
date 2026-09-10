@@ -1,11 +1,11 @@
-#include "clod/GLInterop.h"
+#include "remo/GLInterop.h"
 
 #include <GL/glew.h>
 #include <cudaGL.h>
 
-#include "clod/CudaCheck.h"
+#include "remo/CudaCheck.h"
 
-namespace clod {
+namespace remo {
 
 GLInterop::~GLInterop() { unregister(); }
 
@@ -18,7 +18,7 @@ void GLInterop::unregister() {
 		m_mapped = false;
 	}
 	if (m_resource) {
-		CLOD_CU(cuGraphicsUnregisterResource(m_resource));
+		REMO_CU(cuGraphicsUnregisterResource(m_resource));
 		m_resource = nullptr;
 	}
 	m_glTexture = 0;
@@ -41,7 +41,7 @@ bool GLInterop::bind(unsigned int glTexture, int width, int height,
 
 	// WRITE_DISCARD: the kernel overwrites every pixel it cares about, so the
 	// driver need not preserve the previous contents.
-	const CUresult r = CLOD_CU(cuGraphicsGLRegisterImage(
+	const CUresult r = REMO_CU(cuGraphicsGLRegisterImage(
 		&m_resource, glTexture, GL_TEXTURE_2D,
 		CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD));
 	if (r != CUDA_SUCCESS) {
@@ -65,13 +65,13 @@ bool GLInterop::map(CUstream stream, std::string* err) {
 	}
 	if (m_mapped) return true;
 
-	if (CLOD_CU(cuGraphicsMapResources(1, &m_resource, stream)) != CUDA_SUCCESS) {
+	if (REMO_CU(cuGraphicsMapResources(1, &m_resource, stream)) != CUDA_SUCCESS) {
 		if (err) *err = "cuGraphicsMapResources failed";
 		return false;
 	}
 
 	CUarray array = nullptr;
-	if (CLOD_CU(cuGraphicsSubResourceGetMappedArray(&array, m_resource, 0, 0)) !=
+	if (REMO_CU(cuGraphicsSubResourceGetMappedArray(&array, m_resource, 0, 0)) !=
 	    CUDA_SUCCESS) {
 		cuGraphicsUnmapResources(1, &m_resource, stream);
 		if (err) *err = "cuGraphicsSubResourceGetMappedArray failed";
@@ -83,7 +83,7 @@ bool GLInterop::map(CUstream stream, std::string* err) {
 	desc.res.array.hArray = array;
 
 	CUsurfObject surface = 0;
-	if (CLOD_CU(cuSurfObjectCreate(&surface, &desc)) != CUDA_SUCCESS) {
+	if (REMO_CU(cuSurfObjectCreate(&surface, &desc)) != CUDA_SUCCESS) {
 		cuGraphicsUnmapResources(1, &m_resource, stream);
 		if (err) *err = "cuSurfObjectCreate failed";
 		return false;
@@ -97,11 +97,11 @@ bool GLInterop::map(CUstream stream, std::string* err) {
 void GLInterop::unmap(CUstream stream) {
 	if (!m_mapped) return;
 	if (m_surface) {
-		CLOD_CU(cuSurfObjectDestroy(m_surface));
+		REMO_CU(cuSurfObjectDestroy(m_surface));
 		m_surface = 0;
 	}
-	CLOD_CU(cuGraphicsUnmapResources(1, &m_resource, stream));
+	REMO_CU(cuGraphicsUnmapResources(1, &m_resource, stream));
 	m_mapped = false;
 }
 
-}  // namespace clod
+}  // namespace remo

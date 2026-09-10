@@ -1,15 +1,15 @@
-#include "clod/CudaCheck.h"
+#include "remo/CudaCheck.h"
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace clod {
+namespace remo {
 
 void reportDeadContextAndExit(CUresult result, const char* what) {
 	fflush(stdout);
 	fprintf(stderr,
 	        "\n"
-	        "clodgen: FATAL -- the CUDA context is dead (%s)\n"
+	        "remobench: FATAL -- the CUDA context is dead (%s)\n"
 	        "  while running: %s\n"
 	        "  detail: %s\n"
 	        "\n"
@@ -21,7 +21,7 @@ void reportDeadContextAndExit(CUresult result, const char* what) {
 	        "\n"
 	        "Most likely causes, in order:\n"
 	        "  - a device-side buffer overrun. The bump allocators have no bounds check\n"
-	        "    on the reference kernels' side; ClodGen's own (kernels/shared/clod_alloc.cuh)\n"
+	        "    on the reference kernels' side; RemoBench's own (kernels/shared/remo_alloc.cuh)\n"
 	        "    reports overflow through DeviceDiagnostics instead.\n"
 	        "  - an input distribution the pipeline cannot handle. CudaLOD's split runs\n"
 	        "    once at a fixed depth and its capacities are unchecked, so a degenerate\n"
@@ -29,7 +29,7 @@ void reportDeadContextAndExit(CUresult result, const char* what) {
 	        "  - too small a device budget for the chosen sampling strategy.\n"
 	        "\n"
 	        "To narrow it down:\n"
-	        "  compute-sanitizer ./build/clodgen <same arguments>\n",
+	        "  compute-sanitizer ./build/remobench <same arguments>\n",
 	        cuErrorName(result), what, cuErrorString(result));
 	fflush(stderr);
 	// _Exit, not exit: with a dead context, running static destructors invites the CUDA
@@ -37,4 +37,4 @@ void reportDeadContextAndExit(CUresult result, const char* what) {
 	std::_Exit(70);  // EX_SOFTWARE
 }
 
-}  // namespace clod
+}  // namespace remo

@@ -1,14 +1,14 @@
-#include "clod/CudaContext.h"
+#include "remo/CudaContext.h"
 
 #include <algorithm>
 
-#include "clod/CudaCheck.h"
+#include "remo/CudaCheck.h"
 
-namespace clod {
+namespace remo {
 
 CudaContext::CudaContext() {
-	CLOD_CU_FATAL(cuInit(0));
-	CLOD_CU_FATAL(cuDeviceGet(&m_device, 0));
+	REMO_CU_FATAL(cuInit(0));
+	REMO_CU_FATAL(cuDeviceGet(&m_device, 0));
 
 	char name[256] = {};
 	if (cuDeviceGetName(name, sizeof(name), m_device) == CUDA_SUCCESS) {
@@ -24,13 +24,13 @@ CudaContext::CudaContext() {
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 13000
 	// CUDA 13: cuCtxCreate is the _v4 variant, taking CUctxCreateParams*.
-	CLOD_CU_FATAL(cuCtxCreate(&m_context, nullptr, 0, m_device));
+	REMO_CU_FATAL(cuCtxCreate(&m_context, nullptr, 0, m_device));
 #else
-	CLOD_CU_FATAL(cuCtxCreate(&m_context, 0, m_device));
+	REMO_CU_FATAL(cuCtxCreate(&m_context, 0, m_device));
 #endif
 
-	CLOD_CU_FATAL(cuStreamCreate(&m_upload, CU_STREAM_NON_BLOCKING));
-	CLOD_CU_FATAL(cuStreamCreate(&m_download, CU_STREAM_NON_BLOCKING));
+	REMO_CU_FATAL(cuStreamCreate(&m_upload, CU_STREAM_NON_BLOCKING));
+	REMO_CU_FATAL(cuStreamCreate(&m_download, CU_STREAM_NON_BLOCKING));
 }
 
 CudaContext::~CudaContext() {
@@ -57,7 +57,7 @@ int CudaContext::gridForKernel(CUfunction kernel, int blockSize,
 	const CUresult r = cuOccupancyMaxActiveBlocksPerMultiprocessor(
 		&maxBlocksPerSM, kernel, blockSize, 0);
 	if (r != CUDA_SUCCESS || maxBlocksPerSM < 1) {
-		CLOD_CU(r);
+		REMO_CU(r);
 		maxBlocksPerSM = 1;
 	}
 
@@ -71,4 +71,4 @@ int CudaContext::gridForKernel(CUfunction kernel, int blockSize,
 	return std::min(requested, residentMax);
 }
 
-}  // namespace clod
+}  // namespace remo

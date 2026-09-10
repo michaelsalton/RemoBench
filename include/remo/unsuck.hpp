@@ -6,7 +6,7 @@
 // queue, and the file-watcher that hot reload is built on. Taken verbatim -- it
 // has zero coupling to the rest of SimLOD.
 //
-// The load-bearing pieces for ClodGen, in rough order of importance:
+// The load-bearing pieces for RemoBench, in rough order of importance:
 //   monitorFile() + EventQueue + schedule()  -- the substrate for kernel hot
 //       reload. monitorFile polls mtime on a detached thread and schedules the
 //       callback onto the EventQueue, which the render loop drains on the main

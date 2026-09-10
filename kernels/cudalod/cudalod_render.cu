@@ -1,4 +1,4 @@
-// CudaLOD's LOD selection, ClodGen's shared rasteriser.
+// CudaLOD's LOD selection, RemoBench's shared rasteriser.
 //
 // This file replaces upstream's render.cu (1932 lines). Only the SELECTION half is
 // ported, because that is the part under study -- deciding which nodes to draw is a real
@@ -25,23 +25,23 @@
 #include "common.h"
 #include "methods_common.h.cu"
 
-#include "shared/clod_pipeline.cuh"
+#include "shared/remo_pipeline.cuh"
 
 // CudaLOD's device headers define their own vec3/Box3 and pull in cooperative_groups
-// themselves, so `clod::` names are qualified rather than dumped into scope -- a bare
-// `using namespace clod` would make `Point` ambiguous between the two definitions.
+// themselves, so `remo::` names are qualified rather than dumped into scope -- a bare
+// `using namespace remo` would make `Point` ambiguous between the two definitions.
 // They are layout-identical (float x,y,z + uint32 colour), which is why the
 // reinterpret_casts below are sound.
-using clod::ClodAllocator;
-using clod::ClodContiguousWalker;
-using clod::DrawItem;
-using clod::DrawList;
-using clod::Frustum;
-using clod::RenderArgs;
-using clod::SharedUniforms;
+using remo::RemoAllocator;
+using remo::RemoContiguousWalker;
+using remo::DrawItem;
+using remo::DrawList;
+using remo::Frustum;
+using remo::RenderArgs;
+using remo::SharedUniforms;
 
-static_assert(sizeof(Point) == sizeof(clod::Point),
-              "CudaLOD's Point must match clod::Point for the shared rasteriser");
+static_assert(sizeof(Point) == sizeof(remo::Point),
+              "CudaLOD's Point must match remo::Point for the shared rasteriser");
 
 // How many nodes the draw list can hold. MAX_NODES is 200'000 upstream, but the visible
 // set is a small fraction of that; overflow is reported rather than silently truncating.
@@ -49,7 +49,7 @@ constexpr uint32_t CUDALOD_DRAWLIST_CAPACITY = 65536;
 
 // Is this node worth subdividing past?
 //
-// CLOD_LOD_CUDALOD_NATIVE reproduces upstream exactly, for validating the port against
+// REMO_LOD_CUDALOD_NATIVE reproduces upstream exactly, for validating the port against
 // bench/reference/. The default is the shared pixel budget, which is what makes "both
 // pipelines at the same LOD" mean the same cut -- upstream's lodScale is angular but not
 // calibrated to the viewport, and SimLOD's minNodeSize is in world units and therefore
@@ -62,19 +62,19 @@ static bool cudalodNodeVisible(const Node* node, const SharedUniforms& u,
 	// are not.
 	if (node->level == 0) return true;
 
-	clod::vec3f boxMin = {node->min.x, node->min.y, node->min.z};
-	clod::vec3f boxMax = {node->max.x, node->max.y, node->max.z};
+	remo::vec3f boxMin = {node->min.x, node->min.y, node->min.z};
+	remo::vec3f boxMax = {node->max.x, node->max.y, node->max.z};
 	if (!frustum.intersectsBox(boxMin, boxMax)) return false;
 
 	const float cx = (node->min.x + node->max.x) * 0.5f;
 	const float cy = (node->min.y + node->max.y) * 0.5f;
 	const float cz = (node->min.z + node->max.z) * 0.5f;
 
-	const clod::float4v clip = clod::clodMatMul(u.transformFrozen, cx, cy, cz, 1.0f);
+	const remo::float4v clip = remo::remoMatMul(u.transformFrozen, cx, cy, cz, 1.0f);
 	float distance = clip.w;
 	if (distance < 0.1f) distance = 0.1f;
 
-#ifdef CLOD_LOD_CUDALOD_NATIVE
+#ifdef REMO_LOD_CUDALOD_NATIVE
 	const float lodFactor = 1.0f - 0.97f * u.lodScale;
 	return node->cubeSize / distance >= lodFactor;
 #else
@@ -88,18 +88,18 @@ static bool cudalodNodeVisible(const Node* node, const SharedUniforms& u,
 
 extern "C" __global__ void kernel_render(RenderArgs args, void** nnodes,
                                          uint32_t* num_nodes,
-                                         clod::DeviceDiagnostics* diag) {
+                                         remo::DeviceDiagnostics* diag) {
 	auto grid = cg::this_grid();
 
 	const SharedUniforms& u = args.uniforms;
 
 	// Uniform control flow: every thread reaches every alloc(), in the same order.
-	// See the banner in kernels/shared/clod_alloc.cuh.
-	ClodAllocator alloc(args.scratch, args.scratchCapacity, diag);
+	// See the banner in kernels/shared/remo_alloc.cuh.
+	RemoAllocator alloc(args.scratch, args.scratchCapacity, diag);
 	const uint64_t numPixels =
 		static_cast<uint64_t>(u.width) * static_cast<uint64_t>(u.height);
 	uint64_t* framebuffer = alloc.alloc<uint64_t*>(8ull * numPixels);
-	DrawList drawList = clod::clodAllocDrawList(alloc, CUDALOD_DRAWLIST_CAPACITY);
+	DrawList drawList = remo::remoAllocDrawList(alloc, CUDALOD_DRAWLIST_CAPACITY);
 	// Samples referenced by the emitted items, for the stats panel.
 	uint64_t* sampleCount = alloc.alloc<uint64_t*>(8);
 	uint8_t* visibleFlags = alloc.alloc<uint8_t*>(MAX_NODES);
@@ -109,8 +109,8 @@ extern "C" __global__ void kernel_render(RenderArgs args, void** nnodes,
 		return;  // diag->allocOverflow is set; the host reports it
 	}
 
-	clod::clodClearFramebuffer(framebuffer, u);
-	clod::clodResetDrawList(drawList);
+	remo::remoClearFramebuffer(framebuffer, u);
+	remo::remoResetDrawList(drawList);
 	if (grid.thread_rank() == 0) *sampleCount = 0ull;
 	grid.sync();
 
@@ -118,7 +118,7 @@ extern "C" __global__ void kernel_render(RenderArgs args, void** nnodes,
 	const uint32_t numNodes = *num_nodes;
 	if (nodes == nullptr || numNodes == 0u) {
 		grid.sync();
-		clod::clodResolve(framebuffer, u,
+		remo::remoResolve(framebuffer, u,
 		                  static_cast<cudaSurfaceObject_t>(args.surface));
 		return;
 	}
@@ -127,13 +127,13 @@ extern "C" __global__ void kernel_render(RenderArgs args, void** nnodes,
 	// because the octant mask below needs to know whether a node's CHILDREN are
 	// visible, which is not known until the whole pass is complete.
 	const Frustum frustum = Frustum::fromViewProj(u.transformFrozen);
-	clod::processRangeStrided(numNodes, [&](uint64_t i) {
+	remo::processRangeStrided(numNodes, [&](uint64_t i) {
 		visibleFlags[i] = cudalodNodeVisible(&nodes[i], u, frustum) ? 1u : 0u;
 	});
 	grid.sync();
 
 	// Pass 2: emit the visible set.
-	clod::processRangeStrided(numNodes, [&](uint64_t i) {
+	remo::processRangeStrided(numNodes, [&](uint64_t i) {
 		if (visibleFlags[i] == 0u) return;
 		Node* node = &nodes[i];
 
@@ -158,7 +158,7 @@ extern "C" __global__ void kernel_render(RenderArgs args, void** nnodes,
 
 				// PERMUTE INTO THE SHARED OCTANT ORDER. CudaLOD indexes children as
 				// (ox << 2) | (oy << 1) | oz (split_countsort_blockwise.h.cu:520),
-				// x in the HIGH bit; clodOctantOf uses x in the LOW bit. Using c
+				// x in the HIGH bit; remoOctantOf uses x in the LOW bit. Using c
 				// directly as a mask bit masks the wrong octants, which renders as
 				// large holes while the LOD structure is provably fine.
 				const uint32_t ox = (c >> 2) & 1u;
@@ -185,7 +185,7 @@ extern "C" __global__ void kernel_render(RenderArgs args, void** nnodes,
 		}
 
 		if (item.points.count == 0u && item.voxels.count == 0u) return;
-		if (clod::clodDrawListAppend(drawList, item)) {
+		if (remo::remoDrawListAppend(drawList, item)) {
 			atomicAdd(reinterpret_cast<unsigned long long*>(sampleCount),
 			          static_cast<unsigned long long>(item.points.count) +
 			              static_cast<unsigned long long>(item.voxels.count));
@@ -194,19 +194,19 @@ extern "C" __global__ void kernel_render(RenderArgs args, void** nnodes,
 	grid.sync();
 
 	// Points and voxels are both contiguous Point arrays here, so one walker covers both.
-	clod::clodRasterizeDrawList<ClodContiguousWalker>(drawList, framebuffer, u);
+	remo::remoRasterizeDrawList<RemoContiguousWalker>(drawList, framebuffer, u);
 	grid.sync();
 
-	clod::clodApplyEDL(framebuffer, u);
+	remo::remoApplyEDL(framebuffer, u);
 	grid.sync();
 
-	// After EDL, deliberately -- see the note on clodDrawListWireframe. Unlike SimLOD's
+	// After EDL, deliberately -- see the note on remoDrawListWireframe. Unlike SimLOD's
 	// disjoint frontier, CudaLOD marks a parent AND its children visible, so expect
 	// nested cubes here. That is the selection difference made visible, not a bug.
-	clod::clodDrawListWireframe(drawList, framebuffer, u);
+	remo::remoDrawListWireframe(drawList, framebuffer, u);
 	grid.sync();
 
-	clod::clodResolve(framebuffer, u,
+	remo::remoResolve(framebuffer, u,
 	                  static_cast<cudaSurfaceObject_t>(args.surface));
 
 	if (grid.thread_rank() == 0 && diag != nullptr) {

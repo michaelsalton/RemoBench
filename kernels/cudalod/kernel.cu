@@ -11,7 +11,7 @@
 // Changed from upstream: the #includes for nine superseded voxelize variants and for
 // split_countsort / split_hashmap are dropped. Every reference to them in this file was
 // already commented out (upstream marks split_hashmap "prototyping, dont use"), so the
-// live dispatch is unaffected -- verified with `clodgen --check-kernels --as-group`.
+// live dispatch is unaffected -- verified with `remobench --check-kernels --as-group`.
 #define VERBOSE false
 
 #include <cooperative_groups.h>

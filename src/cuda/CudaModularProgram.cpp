@@ -2,9 +2,9 @@
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
 //
-// See include/clod/CudaModularProgram.h for what changed and why.
+// See include/remo/CudaModularProgram.h for what changed and why.
 
-#include "clod/CudaModularProgram.h"
+#include "remo/CudaModularProgram.h"
 
 #include <nvJitLink.h>
 #include <nvrtc.h>
@@ -17,13 +17,13 @@
 #include <mutex>
 #include <sstream>
 
-#include "clod/CudaCheck.h"
+#include "remo/CudaCheck.h"
 // For monitorFile() / EventQueue -- the hot-reload substrate.
-#include "clod/unsuck.hpp"
+#include "remo/unsuck.hpp"
 
 namespace fs = std::filesystem;
 
-namespace clod {
+namespace remo {
 
 // Defined below; used by the helpers in the anonymous namespace.
 const std::string& kernelRoot();
@@ -40,11 +40,11 @@ std::string envOr(const char* name, const std::string& fallback) {
 }
 
 std::string cudaIncludeDir() {
-#ifdef CLODGEN_CUDA_INCLUDE_DIR
+#ifdef REMOBENCH_CUDA_INCLUDE_DIR
 	// Baked in by CMake from CUDAToolkit_INCLUDE_DIRS. Both research repos read
 	// CUDA_PATH from the environment instead, which is why they need an env var
 	// set just to compile a kernel. CUDA_PATH still wins if explicitly set.
-	const std::string builtin = CLODGEN_CUDA_INCLUDE_DIR;
+	const std::string builtin = REMOBENCH_CUDA_INCLUDE_DIR;
 #else
 	const std::string builtin = "/usr/local/cuda/include";
 #endif
@@ -54,17 +54,17 @@ std::string cudaIncludeDir() {
 }
 
 std::string projectIncludeDir() {
-#ifdef CLODGEN_INCLUDE_DIR
-	return envOr("CLODGEN_INCLUDE_DIR", CLODGEN_INCLUDE_DIR);
+#ifdef REMOBENCH_INCLUDE_DIR
+	return envOr("REMOBENCH_INCLUDE_DIR", REMOBENCH_INCLUDE_DIR);
 #else
-	return envOr("CLODGEN_INCLUDE_DIR", "include");
+	return envOr("REMOBENCH_INCLUDE_DIR", "include");
 #endif
 }
 
 std::string cacheDir() {
 	static const std::string dir = envOr(
-		"CLODGEN_CACHE_DIR",
-		(fs::temp_directory_path() / "clodgen-kernel-cache").string());
+		"REMOBENCH_CACHE_DIR",
+		(fs::temp_directory_path() / "remobench-kernel-cache").string());
 	return dir;
 }
 
@@ -110,7 +110,7 @@ uint64_t dependencyFingerprint() {
 		if (ext == ".cuh" || ext == ".h") headers.push_back(it->path());
 	}
 	// The one header shared with host code.
-	headers.push_back(fs::path(projectIncludeDir()) / "clod" / "HostDeviceCommon.h");
+	headers.push_back(fs::path(projectIncludeDir()) / "remo" / "HostDeviceCommon.h");
 
 	// Sort so the fingerprint does not depend on directory iteration order.
 	std::sort(headers.begin(), headers.end());
@@ -161,7 +161,7 @@ void writeCache(const std::string& key, const std::vector<char>& data) {
 //
 //   1. The watcher outlives the program. Switching pipeline destroys a program, and its
 //      watchers keep polling with a dangling `this`.
-//   2. Every program re-registers every shared header. flat is 1 module + ~7 headers;
+//   2. Every program re-registers every shared header. remolod is 1 module + ~7 headers;
 //      cudalod is two programs x (2 modules + 7 headers). One switch left ~35 immortal
 //      threads, each constructing an fs::path (a heap allocation) every 20ms forever.
 //      The observed crash was a SIGSEGV inside _int_malloc on a *thread* arena, in
@@ -223,10 +223,10 @@ private:
 
 const std::string& kernelRoot() {
 	static const std::string root = [] {
-#ifdef CLODGEN_KERNEL_DIR
-		return envOr("CLODGEN_KERNEL_DIR", CLODGEN_KERNEL_DIR);
+#ifdef REMOBENCH_KERNEL_DIR
+		return envOr("REMOBENCH_KERNEL_DIR", REMOBENCH_KERNEL_DIR);
 #else
-		return envOr("CLODGEN_KERNEL_DIR", "kernels");
+		return envOr("REMOBENCH_KERNEL_DIR", "kernels");
 #endif
 	}();
 	return root;
@@ -247,17 +247,17 @@ CudaModularProgram::CudaModularProgram(KernelProgramDesc desc)
 	cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev);
 	m_smArch = major * 10 + minor;
 
-	// CLODGEN_GPU_ARCH overrides, for cross-compiling or reproducing a bug on
+	// REMOBENCH_GPU_ARCH overrides, for cross-compiling or reproducing a bug on
 	// another target.
-	m_arch = envOr("CLODGEN_GPU_ARCH", "compute_" + std::to_string(m_smArch));
+	m_arch = envOr("REMOBENCH_GPU_ARCH", "compute_" + std::to_string(m_smArch));
 
 	for (const std::string& rel : m_desc.modules) {
 		Module mod;
 		const fs::path p(rel);
 		// Absolute wins; then an existing path relative to the working directory
-		// (so `clodgen --check-kernels external/.../kernel.cu` does what it looks
+		// (so `remobench --check-kernels external/.../kernel.cu` does what it looks
 		// like); then relative to the kernels root, which is how pipelines name
-		// their own modules ("flat/flat_render.cu").
+		// their own modules ("remolod/remolod_render.cu").
 		std::error_code ec;
 		if (p.is_absolute()) {
 			mod.path = p.string();
@@ -367,9 +367,9 @@ std::vector<std::string> CudaModularProgram::nvrtcOptions(
 		// by cooperative_groups) into include/cccl. Harmless on CUDA 12.
 		"-I" + cudaIncludeDir() + "/cccl",
 		"-I" + moduleDir,
-		// So a pipeline can #include "shared/clod_math.cuh".
+		// So a pipeline can #include "shared/remo_math.cuh".
 		"-I" + kernelRoot(),
-		// So a kernel can #include "clod/HostDeviceCommon.h" -- the single header
+		// So a kernel can #include "remo/HostDeviceCommon.h" -- the single header
 		// shared between host C++ and device code.
 		"-I" + projectIncludeDir(),
 		"--relocatable-device-code=true",
@@ -391,7 +391,7 @@ bool CudaModularProgram::compile(Module& mod) {
 	const std::string source = readTextOrEmpty(mod.path);
 	if (source.empty()) {
 		m_lastError = "cannot read kernel source: " + mod.path;
-		fprintf(stderr, "clodgen: %s\n", m_lastError.c_str());
+		fprintf(stderr, "remobench: %s\n", m_lastError.c_str());
 		return false;
 	}
 
@@ -429,7 +429,7 @@ bool CudaModularProgram::compile(Module& mod) {
 		if (logSize) nvrtcGetProgramLog(prog, log.data());
 
 		m_lastError = "compile failed: " + mod.name + "\n" + log;
-		fprintf(stderr, "clodgen: %s\n", m_lastError.c_str());
+		fprintf(stderr, "remobench: %s\n", m_lastError.c_str());
 
 		// Upstream leaked the program on this branch.
 		nvrtcDestroyProgram(&prog);
@@ -602,7 +602,7 @@ bool CudaModularProgram::link() {
 		if (r != CUDA_SUCCESS) {
 			m_lastError = "kernel not found in linked module: " + name +
 			              " (is it extern \"C\" __global__?)";
-			fprintf(stderr, "clodgen: %s\n", m_lastError.c_str());
+			fprintf(stderr, "remobench: %s\n", m_lastError.c_str());
 			allFound = false;
 			continue;
 		}
@@ -630,7 +630,7 @@ bool CudaModularProgram::link() {
 			if (!names.empty()) names += ", ";
 			names += mod.name;
 		}
-		printf("clodgen: reloaded [%s]\n", names.c_str());
+		printf("remobench: reloaded [%s]\n", names.c_str());
 		fflush(stdout);
 	}
 
@@ -638,4 +638,4 @@ bool CudaModularProgram::link() {
 	return true;
 }
 
-}  // namespace clod
+}  // namespace remo

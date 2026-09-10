@@ -11,7 +11,7 @@
 
 #include <string>
 
-namespace clod {
+namespace remo {
 
 class GpuProfiler;
 
@@ -23,4 +23,4 @@ void timingRow(const GpuProfiler& profiler, const char* label,
 class ScopeStats;
 void timingRow(const char* label, const ScopeStats& stats);
 
-}  // namespace clod
+}  // namespace remo

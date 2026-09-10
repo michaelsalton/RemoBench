@@ -29,27 +29,27 @@
 
 #pragma once
 
-#include "shared/clod_draw.cuh"
+#include "shared/remo_draw.cuh"
 
-namespace clod {
+namespace remo {
 
 // Wireframe colour for a node at this level.
 //
-// Deliberately the SAME expression clodSampleColor uses for COLOR_BY_LOD, so that with
+// Deliberately the SAME expression remoSampleColor uses for COLOR_BY_LOD, so that with
 // `colour: by LOD` selected a node's cube and the samples inside it come out the same
 // colour. That correspondence is the point -- it is what lets you see that a patch of
 // colour really is one node's worth of samples rather than two nodes that happen to hash
 // alike.
-inline uint32_t clodLevelColor(uint32_t level) {
-	return clodHashColor(static_cast<uint64_t>(level) * 2654435761ull);
+inline uint32_t remoLevelColor(uint32_t level) {
+	return remoHashColor(static_cast<uint64_t>(level) * 2654435761ull);
 }
 
 // Endpoints of one of a cube's twelve edges.
 //
 // Corners are indexed x = bit 0, y = bit 1, z = bit 2 -- the shared convention from
-// clodOctantOf, so edge and octant indices agree rather than being two orders to keep
+// remoOctantOf, so edge and octant indices agree rather than being two orders to keep
 // straight. Edges 0-3 run along x, 4-7 along y, 8-11 along z.
-inline void clodBoxEdge(vec3f boxMin, float size, uint32_t edge, vec3f& outA,
+inline void remoBoxEdge(vec3f boxMin, float size, uint32_t edge, vec3f& outA,
                         vec3f& outB) {
 	const uint32_t axis = edge / 4u;  // 0 = x, 1 = y, 2 = z
 	const uint32_t rest = edge % 4u;  // which of the four edges parallel to it
@@ -76,7 +76,7 @@ inline void clodBoxEdge(vec3f boxMin, float size, uint32_t edge, vec3f& outA,
 // can be tens of thousands of pixels long, almost all of it off-screen. Upstream instead
 // clamps the step count to 400 (rasterization.cuh), which bounds the cost by drawing a
 // dotted line -- long edges visibly break up.
-inline bool clodClipSegment2D(float x0, float y0, float x1, float y1, float xmax,
+inline bool remoClipSegment2D(float x0, float y0, float x1, float y1, float xmax,
                               float ymax, float& t0, float& t1) {
 	const float dx = x1 - x0;
 	const float dy = y1 - y0;
@@ -110,17 +110,17 @@ inline bool clodClipSegment2D(float x0, float y0, float x1, float y1, float xmax
 // behind a wall is correctly hidden by it. That is the reason for the care taken over
 // depth below: a wireframe with wrong depths does not look like a wrong wireframe, it
 // looks like the LOD structure is in the wrong place.
-inline void clodDrawSegment(uint64_t* fb, const SharedUniforms& u, vec3f a, vec3f b,
+inline void remoDrawSegment(uint64_t* fb, const SharedUniforms& u, vec3f a, vec3f b,
                             uint32_t color) {
-	float4v c0 = clodMatMul(u.transform, a.x, a.y, a.z, 1.0f);
-	float4v c1 = clodMatMul(u.transform, b.x, b.y, b.z, 1.0f);
+	float4v c0 = remoMatMul(u.transform, a.x, a.y, a.z, 1.0f);
+	float4v c1 = remoMatMul(u.transform, b.x, b.y, b.z, 1.0f);
 
 	// Near clip in CLIP space, before the perspective divide.
 	//
 	// Not optional. Dividing by a negative w mirrors the endpoint through the origin, so
 	// an edge crossing behind the eye is drawn to the wrong side of the screen -- a long
 	// bogus streak across the viewport, which reads as a rendering bug rather than as a
-	// clipping one. clodProject sidesteps this by rejecting w <= 0 outright, which is
+	// clipping one. remoProject sidesteps this by rejecting w <= 0 outright, which is
 	// right for a point and wrong for a segment with one endpoint in front.
 	constexpr float kMinW = 1.0e-6f;
 	if (c0.w < kMinW && c1.w < kMinW) return;
@@ -147,7 +147,7 @@ inline void clodDrawSegment(uint64_t* fb, const SharedUniforms& u, vec3f a, vec3
 	if (width <= 0 || height <= 0) return;
 
 	float t0, t1;
-	if (!clodClipSegment2D(sx0, sy0, sx1, sy1, static_cast<float>(width - 1),
+	if (!remoClipSegment2D(sx0, sy0, sx1, sy1, static_cast<float>(width - 1),
 	                       static_cast<float>(height - 1), t0, t1)) {
 		return;
 	}
@@ -184,18 +184,18 @@ inline void clodDrawSegment(uint64_t* fb, const SharedUniforms& u, vec3f a, vec3
 			static_cast<uint64_t>(ix);
 		atomicMin(reinterpret_cast<unsigned long long*>(&fb[index]),
 		          static_cast<unsigned long long>(
-					  clodFbPack(1.0f / invW, color)));
+					  remoFbPack(1.0f / invW, color)));
 	}
 }
 
 // Draw a cube per DrawItem, coloured by level. No-op unless u.showBoundingBox is set.
 //
-// CALL THIS AFTER clodApplyEDL, not before. EDL shades from depth discontinuities and a
+// CALL THIS AFTER remoApplyEDL, not before. EDL shades from depth discontinuities and a
 // wireframe is nothing but depth discontinuities, so shading it rings every edge with a
 // dark halo and dims the lines themselves. An overlay should not be lit.
 //
-// Grid-wide, so the caller must grid.sync() before clodResolve.
-inline void clodDrawListWireframe(const DrawList& list, uint64_t* fb,
+// Grid-wide, so the caller must grid.sync() before remoResolve.
+inline void remoDrawListWireframe(const DrawList& list, uint64_t* fb,
                                   const SharedUniforms& u) {
 	if (u.showBoundingBox == 0) return;
 
@@ -205,16 +205,16 @@ inline void clodDrawListWireframe(const DrawList& list, uint64_t* fb,
 	processRangeStrided(static_cast<uint64_t>(numItems) * 12ull, [&](uint64_t i) {
 		const DrawItem& item = list.items[i / 12ull];
 
-		// `flat` has no tree: its items are fixed-size slices of the point array and
+		// `remolod` has no tree: its items are fixed-size slices of the point array and
 		// carry nodeSize 0. Draw nothing rather than a degenerate cube at the origin --
 		// the toggle is correctly inert for the control condition.
 		if (!(item.nodeSize > 0.0f)) return;
 
 		vec3f edgeA, edgeB;
-		clodBoxEdge(item.nodeMin, item.nodeSize, static_cast<uint32_t>(i % 12ull),
+		remoBoxEdge(item.nodeMin, item.nodeSize, static_cast<uint32_t>(i % 12ull),
 		            edgeA, edgeB);
-		clodDrawSegment(fb, u, edgeA, edgeB, clodLevelColor(item.level));
+		remoDrawSegment(fb, u, edgeA, edgeB, remoLevelColor(item.level));
 	});
 }
 
-}  // namespace clod
+}  // namespace remo

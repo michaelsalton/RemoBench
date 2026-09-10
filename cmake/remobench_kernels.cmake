@@ -11,12 +11,12 @@
 # Upstream SimLOD copies (CMakeLists.txt:112-142) and has a broken
 # symlink-detection branch; the CudaLOD Linux port symlinks, which is correct.
 #
-# We also bake an absolute path into the binary (CLODGEN_KERNEL_DIR) so a build
+# We also bake an absolute path into the binary (REMOBENCH_KERNEL_DIR) so a build
 # run from anywhere still finds its kernels. The symlink is a convenience for
 # running the binary directly from the build dir; the compiled-in path is the
 # thing that actually makes `--open` from any cwd work.
 
-function(clodgen_link_kernels target)
+function(remobench_link_kernels target)
 	set(_link "$<TARGET_FILE_DIR:${target}>/kernels")
 
 	add_custom_command(TARGET ${target} POST_BUILD
@@ -26,11 +26,11 @@ function(clodgen_link_kernels target)
 		COMMENT "symlinking kernels/ next to ${target}"
 		VERBATIM)
 
-	# Passed to NVRTC at runtime so a kernel can #include "clod/HostDeviceCommon.h",
+	# Passed to NVRTC at runtime so a kernel can #include "remo/HostDeviceCommon.h",
 	# the one header shared across the host/device boundary. Baked in at configure
 	# time rather than resolved relative to the working directory, so the binary works
 	# from anywhere.
 	target_compile_definitions(${target} PRIVATE
-		CLODGEN_KERNEL_DIR="${CMAKE_SOURCE_DIR}/kernels"
-		CLODGEN_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/include")
+		REMOBENCH_KERNEL_DIR="${CMAKE_SOURCE_DIR}/kernels"
+		REMOBENCH_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/include")
 endfunction()

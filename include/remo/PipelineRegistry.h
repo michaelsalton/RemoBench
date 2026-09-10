@@ -20,9 +20,9 @@
 #include <string>
 #include <vector>
 
-#include "clod/ILodPipeline.h"
+#include "remo/ILodPipeline.h"
 
-namespace clod {
+namespace remo {
 
 class PointSource;
 
@@ -88,4 +88,4 @@ private:
 	std::string m_activeId;
 };
 
-}  // namespace clod
+}  // namespace remo

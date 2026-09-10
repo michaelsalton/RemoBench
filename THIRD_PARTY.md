@@ -1,6 +1,6 @@
 # Third-party code
 
-ClodGen is a research tool built on two prior implementations by Markus Schütz
+RemoBench is a research tool built on two prior implementations by Markus Schütz
 (TU Wien). It vendors code from both. This file records what came from where,
 under what licence, and — the part that vendoring usually gets wrong — *what we
 did with it*.
@@ -13,8 +13,21 @@ Three provenance categories are used throughout:
 | `vendored` | copied into this repo verbatim (or near-verbatim), not to be edited |
 | `adapted` | copied into this repo and then changed — ours to maintain from here on |
 
-Every `vendored` or `adapted` file carries a three-line provenance header naming
-its upstream path, the submodule commit it came from, and its copyright line.
+Every `vendored` or `adapted` file carries a provenance header naming its upstream
+path, the submodule commit it came from, and its copyright line.
+
+For **vendored device code the header is exactly five lines** (upstream path, commit,
+copyright, a pointer to the sidecar notes, then a blank line), followed by the upstream file
+byte for byte. `bench/check_vendored.sh` — `make check-vendored` — asserts this on every
+vendored kernel, and explanatory notes live in `kernels/simlod/VENDORED.md` rather than in the
+files, so "is this still upstream?" stays a `diff` and not a judgement call.
+
+That matters beyond licensing hygiene: `simlod` and `cudalod` are **external comparison
+baselines**, and they are only worth having while they still reproduce their published numbers
+against `bench/reference/`. RemoLOD — this project's own pipeline — forks what it needs into
+`kernels/remolod/` and changes the fork. `kernels/CudaPrint/` sits at that path, rather than
+inside `kernels/simlod/`, so that upstream's `#include "../CudaPrint/CudaPrint.cuh"` resolves
+unchanged; mirroring the upstream layout was cheaper than carrying an edited include line.
 
 ## Upstream projects
 
@@ -25,7 +38,7 @@ its upstream path, the submodule commit it came from, and its copyright line.
 
 Both are MIT, so copying with attribution is unambiguously permitted. CudaLOD's
 `LICENSE.md` additionally notes that some shader files are adapted from
-[three.js](https://github.com/mrdoob/three.js) (also MIT); ClodGen does not use
+[three.js](https://github.com/mrdoob/three.js) (also MIT); RemoBench does not use
 those files.
 
 Neither submodule is copied wholesale. They stay as submodules pinned to exact
@@ -88,12 +101,12 @@ Present and byte-identical in **both** submodules, and licensed
 comment at the top of the file, and the same code inlined at
 `external/CudaLOD/modules/simlod/SimLOD.h:32-49`).
 
-It must not be copied into ClodGen:
+It must not be copied into RemoBench:
 
 - the **NC** (non-commercial) clause is incompatible with an MIT project;
 - the **SA** (share-alike) clause attempts to infect derivatives.
 
-It is also unused by SimLOD's live code path, so nothing is lost. If ClodGen ever
+It is also unused by SimLOD's live code path, so nothing is lost. If RemoBench ever
 needs Morton codes, write them from the published algorithm (or use
 `_pdep_u64`/BMI2 host-side, which is faster anyway) and test against a naive
 reference — do not copy these magic constants.

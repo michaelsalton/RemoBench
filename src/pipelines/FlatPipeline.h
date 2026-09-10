@@ -13,11 +13,11 @@
 #include <memory>
 #include <string>
 
-#include "clod/CudaModularProgram.h"
-#include "clod/ILodPipeline.h"
+#include "remo/CudaModularProgram.h"
+#include "remo/ILodPipeline.h"
 
-namespace clod {
-
+namespace remo {
+	
 class CudaContext;
 
 class FlatPipeline final : public ILodPipeline {
@@ -58,4 +58,4 @@ private:
 	int m_blockSize = 256;
 };
 
-}  // namespace clod
+}  // namespace remo

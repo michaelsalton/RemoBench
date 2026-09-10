@@ -1,30 +1,33 @@
-#include "clod/PipelineRegistry.h"
+#include "remo/PipelineRegistry.h"
 
 #include <cstdio>
 #include <string>
 
-#include "clod/PointSource.h"
+#include "remo/PointSource.h"
 
-namespace clod {
+// The SimLOD ring-size ceiling checked in unsupportedReason() below.
+#include "../../kernels/simlod/simlod_layout.h"
+
+namespace remo {
 
 void PipelineRegistry::add(PipelineFactory factory) {
 	if (!factory) return;
 
 	std::unique_ptr<ILodPipeline> probe = factory();
 	if (!probe) {
-		fprintf(stderr, "clodgen: pipeline factory returned null at registration\n");
+		fprintf(stderr, "remobench: pipeline factory returned null at registration\n");
 		return;
 	}
 	PipelineInfo info = probe->info();
 	probe.reset();
 
 	if (info.id.empty()) {
-		fprintf(stderr, "clodgen: pipeline has an empty id; not registered\n");
+		fprintf(stderr, "remobench: pipeline has an empty id; not registered\n");
 		return;
 	}
 	for (const Entry& e : m_entries) {
 		if (e.info.id == info.id) {
-			fprintf(stderr, "clodgen: duplicate pipeline id '%s'; not registered\n",
+			fprintf(stderr, "remobench: duplicate pipeline id '%s'; not registered\n",
 			        info.id.c_str());
 			return;
 		}
@@ -71,6 +74,33 @@ std::string PipelineRegistry::unsupportedReason(const PipelineInfo& info,
 		return "CudaLOD's split kernel faults on the synthetic fixture's point "
 		       "distribution (not yet root-caused). Load a real .simlod/.las cloud "
 		       "to use this pipeline.";
+	}
+
+	// UPSTREAM LIMIT, kept explicit rather than producing a quietly wrong tree.
+	//
+	// kernel_construct addresses batch N at points + (N % BATCH_STREAM_SIZE) *
+	// MAX_BATCH_SIZE, a ring of 50 one-million-point slots. RemoBench hands it the whole
+	// cloud already resident, where batch N lives at points + N * MAX_BATCH_SIZE with no
+	// wrapping, so the two agree only below 50 batches. Past that the kernel re-reads slot
+	// 0 and builds a tree from the wrong points -- silently, since nothing faults.
+	//
+	// RemoBench used to paper over this by raising BATCH_STREAM_SIZE to 8192 inside
+	// structures.cuh. That worked, at the cost of the comparison baseline no longer being
+	// SimLOD. The baseline is now byte-identical (bench/check_vendored.sh) and the ceiling
+	// is reported instead. RemoLOD raises the constant in its own fork, so it is unaffected;
+	// lifting it for SimLOD means a genuinely wrapping ring in PointSource.
+	if (info.id == "simlod" && meta.numPoints > simlod::kMaxAddressablePoints) {
+		char buf[320];
+		snprintf(buf, sizeof(buf),
+		         "SimLOD's batch ring is %u slots of %llu points, so it can only address "
+		         "%.0fM points; this cloud has %.0fM. Upstream streams instead of holding "
+		         "the cloud resident, so the limit needs a wrapping ring in PointSource. "
+		         "Use remolod, which raises the limit in its own fork.",
+		         simlod::kBatchStreamSize,
+		         static_cast<unsigned long long>(simlod::kMaxBatchSize),
+		         static_cast<double>(simlod::kMaxAddressablePoints) / 1e6,
+		         static_cast<double>(meta.numPoints) / 1e6);
+		return buf;
 	}
 
 	return {};
@@ -135,4 +165,4 @@ bool PipelineRegistry::reloadForCloud(PointSource* source, const CloudMeta& meta
 	return true;
 }
 
-}  // namespace clod
+}  // namespace remo

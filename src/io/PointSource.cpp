@@ -1,4 +1,4 @@
-#include "clod/PointSource.h"
+#include "remo/PointSource.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,14 +6,14 @@
 #include <filesystem>
 #include <random>
 
-#include "clod/CudaCheck.h"
-#include "clod/CudaContext.h"
+#include "remo/CudaCheck.h"
+#include "remo/CudaContext.h"
 #include "io/LasReader.h"
 #include "io/RawReader.h"
 
 namespace fs = std::filesystem;
 
-namespace clod {
+namespace remo {
 
 double CloudMeta::worstQuantisationError() const {
 	// float32 has a 24-bit significand, so the spacing between representable values
@@ -73,12 +73,12 @@ public:
 			return false;
 		}
 
-		if (CLOD_CU(cuMemAlloc(&m_devicePoints, bytes)) != CUDA_SUCCESS) {
+		if (REMO_CU(cuMemAlloc(&m_devicePoints, bytes)) != CUDA_SUCCESS) {
 			if (err) *err = "cuMemAlloc failed for the point buffer";
 			m_devicePoints = 0;
 			return false;
 		}
-		if (CLOD_CU(cuMemcpyHtoD(m_devicePoints, m_points.data(), bytes)) !=
+		if (REMO_CU(cuMemcpyHtoD(m_devicePoints, m_points.data(), bytes)) !=
 		    CUDA_SUCCESS) {
 			if (err) *err = "uploading points failed";
 			stop();
@@ -122,7 +122,7 @@ public:
 	void stop() override {
 		for (CUdeviceptr* p : {&m_devicePoints, &m_batchSizes, &m_numBatchesUploaded}) {
 			if (*p) {
-				CLOD_CU(cuMemFree(*p));
+				REMO_CU(cuMemFree(*p));
 				*p = 0;
 			}
 		}
@@ -166,26 +166,26 @@ private:
 		}
 
 		const size_t sizesBytes = sizes.size() * sizeof(uint32_t);
-		if (CLOD_CU(cuMemAlloc(&m_batchSizes, sizesBytes ? sizesBytes : 4)) !=
+		if (REMO_CU(cuMemAlloc(&m_batchSizes, sizesBytes ? sizesBytes : 4)) !=
 		    CUDA_SUCCESS) {
 			if (err) *err = "cuMemAlloc failed for batchSizes";
 			return false;
 		}
 		if (sizesBytes &&
-		    CLOD_CU(cuMemcpyHtoD(m_batchSizes, sizes.data(), sizesBytes)) !=
+		    REMO_CU(cuMemcpyHtoD(m_batchSizes, sizes.data(), sizesBytes)) !=
 		        CUDA_SUCCESS) {
 			if (err) *err = "uploading batchSizes failed";
 			return false;
 		}
 
-		if (CLOD_CU(cuMemAlloc(&m_numBatchesUploaded, 4)) != CUDA_SUCCESS) {
+		if (REMO_CU(cuMemAlloc(&m_numBatchesUploaded, 4)) != CUDA_SUCCESS) {
 			if (err) *err = "cuMemAlloc failed for numBatchesUploaded";
 			return false;
 		}
 		// All of it, immediately: nothing is streaming here. A progressive pipeline still
 		// paces itself, because it bounds how many batches it consumes per launch and has
 		// its own device-side time budget.
-		if (CLOD_CU(cuMemsetD32(m_numBatchesUploaded, numSlots, 1)) != CUDA_SUCCESS) {
+		if (REMO_CU(cuMemsetD32(m_numBatchesUploaded, numSlots, 1)) != CUDA_SUCCESS) {
 			if (err) *err = "could not publish numBatchesUploaded";
 			return false;
 		}
@@ -322,7 +322,7 @@ bool loadLasCloud(const std::string& path, CloudMeta& meta,
 			return false;
 		}
 
-		printf("clodgen: WARNING -- %s declares a minimum above its own points; "
+		printf("remobench: WARNING -- %s declares a minimum above its own points; "
 		       "re-reading against the observed box. Structural counts will not match "
 		       "a reference that trusted the header.\n",
 		       path.c_str());
@@ -356,7 +356,7 @@ bool loadLasCloud(const std::string& path, CloudMeta& meta,
 	if (grewMaterially) {
 		// Loud, because it means the tree built from this file is NOT the tree another
 		// reader of the same file builds.
-		printf("clodgen: WARNING -- %s declares a bounding box smaller than its "
+		printf("remobench: WARNING -- %s declares a bounding box smaller than its "
 		       "points; grown to [%.3f %.3f %.3f]. Structural counts will not match "
 		       "a reference that trusted the header.\n",
 		       path.c_str(), static_cast<double>(meta.boxSize[0]),
@@ -496,4 +496,4 @@ std::unique_ptr<PointSource> openPointSource(
 	                                        std::move(points));
 }
 
-}  // namespace clod
+}  // namespace remo

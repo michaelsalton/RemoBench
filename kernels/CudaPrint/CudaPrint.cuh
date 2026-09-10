@@ -1,14 +1,8 @@
-// Vendored from SimLOD: modules/CudaPrint/CudaPrint.cuh
+// Vendored from SimLOD: CudaPrint/CudaPrint.cuh
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// A device->host printf ring buffer that is a NO-OP on both ends: print() returns
-// immediately, and the host half is entirely commented out upstream.
-//
-// Copied anyway, because it is threaded through both kernel signatures and called from
-// progressive_octree_voxels.cu -- excising it would mean editing the kernels being
-// validated, for no benefit. The host passes a small dummy allocation. Device printf()
-// works and is what to reach for instead.
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 
 #pragma once
 

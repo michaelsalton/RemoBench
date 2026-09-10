@@ -1,8 +1,16 @@
 # Accumulator Hook: Implementation Plan
 
+> **Superseded in part — read [§10](#10-what-actually-landed-and-where-this-plan-was-wrong) first.**
+> The accumulator shipped as a **separate kernel launch in `kernels/remolod/`**, not as a
+> subpass of SimLOD's `kernel_construct`. Sections 1–9 are kept as originally written because
+> the precision, normalisation and layout analysis in them is still exactly right and still
+> describes the code. What changed is *where the pass runs* and *how it finds its points* —
+> and, as a consequence, the file paths in §8 and the acceptance test in §7. §10 records all
+> of it, including why the original shape broke the SimLOD baseline.
+
 ## TL;DR
 
-- **The hook is the first half of the project.** `wiki/02_ClodPipeline.md` lists four kernels; two exist. The Analysis and Refinement kernels cannot be written until per-node geometry statistics exist, and this plan is the one thing that produces them. It computes nothing and decides nothing — it maintains running sums so that Analysis has something to roll up.
+- **The hook is the first half of the project.** `wiki/02_KernelPipeline.md` lists four kernels; two exist. The Analysis and Refinement kernels cannot be written until per-node geometry statistics exist, and this plan is the one thing that produces them. It computes nothing and decides nothing — it maintains running sums so that Analysis has something to roll up.
 - **It goes in as a subpass of step 4 of the update kernel**, after `insertVoxels` in `addBatch` (`kernels/simlod/progressive_octree_voxels.cu:785`). Step 4 is the only place a point comes to rest exactly once, at exactly one node.
 - **The accumulator is a side array indexed by node index, not fields on `Node`.** This is the one place this plan departs from the notes it grew out of, and it is not optional: `Node` is vendored, 152 bytes, `static_assert`ed at `structures.cuh:184`, and mirrored host-side as `kNodeBytes` (`simlod_layout.h:20`) to size the 200k-node pool. See §3.1.
 - **Two details decide whether the output is usable at all.** Coordinates must be normalised to node-local space before accumulating, and the geometry sums must be `double`. Both come from the same fact: every metric is a covariance, `cov = S2/n - (S1/n)^2`, and the answer the LOD decision depends on is the *smallest* eigenvalue — a subtraction of two nearly equal numbers. §3.2 does the arithmetic.
@@ -262,7 +270,7 @@ note; the ordering is the addition.
 ### 3.5 The Morton watermark, and the premise it is missing
 
 The watermark is the mechanism the Analysis kernel's "advance the watermark / test closure"
-step (`wiki/02_ClodPipeline.md:13-14`) is built on: if the stream arrives in Morton order,
+step (`wiki/02_KernelPipeline.md:13-14`) is built on: if the stream arrives in Morton order,
 then once the watermark passes a node's Morton range, that node can receive no further points
 and its statistics are final.
 
@@ -276,7 +284,7 @@ Implement it as specified — `atomicMax` of the point's `MAX_DEPTH` Morton code
   is 36M serialised atomics on one cache line. Fold it into the same `labeled_partition` group
   as everything else, or take the warp max — either way it becomes one atomic per group.
 
-**The premise, recorded rather than assumed: nothing in ClodGen sorts points into Morton
+**The premise, recorded rather than assumed: nothing in RemoBench sorts points into Morton
 order.** `grep -niE "morton|sort" src/io/` finds nothing relevant; every reader hands points
 to the device in file order, which for `.las`/`.laz` is typically acquisition order along
 flight lines. So:
@@ -296,7 +304,7 @@ flight lines. So:
 
 ## 4. Data layout
 
-New host/device shared header, `include/clod/SimlodAccum.h`. It must follow the two rules
+New host/device shared header, `include/remo/SimlodAccum.h`. It must follow the two rules
 `HostDeviceCommon.h:1-25` states, plus a third that is specific to being included by SimLOD's
 vendored code:
 
@@ -396,7 +404,7 @@ Stages 2 and 3 are where the whole risk is, and both are validated by the same t
 
 ## 7. Verification
 
-There is no test suite (`tests/unit/` is empty, `CLODGEN_BUILD_TESTS` is OFF), so the checks
+There is no test suite (`tests/unit/` is empty, `REMOBENCH_BUILD_TESTS` is OFF), so the checks
 have to come from existing tooling. Three of them are strong.
 
 **1. The tree must not change.** The subpass writes only to the side array; it does not touch
@@ -408,10 +416,10 @@ mutation of vendored state, which is the failure mode that would be hardest to f
 
 ```sh
 # before the change
-./build/clodgen --pipeline simlod --open data/morro_bay_35M/morro_bay_36M.simlod \
+./build/remobench --pipeline simlod --open data/morro_bay_35M/morro_bay_36M.simlod \
     --dump-frame /tmp/base.ppm
 # after
-./build/clodgen --pipeline simlod --open data/morro_bay_35M/morro_bay_36M.simlod \
+./build/remobench --pipeline simlod --open data/morro_bay_35M/morro_bay_36M.simlod \
     --dump-frame /tmp/accum.ppm
 cmp /tmp/base.ppm /tmp/accum.ppm
 ```
@@ -455,8 +463,8 @@ saying so.
 
 | path | contents |
 |---|---|
-| `include/clod/SimlodAccum.h` | `NodeAccum`, `AccumGlobals`, the enums, the `static_assert`s (§4) |
-| `kernels/simlod/clod_accum.cuh` | the subpass: clear-inner pass, descent, normalisation, `labeled_partition` reduction, Morton. **ClodGen's own file, not vendored** — carries no upstream header, unlike its neighbours |
+| `include/remo/SimlodAccum.h` | `NodeAccum`, `AccumGlobals`, the enums, the `static_assert`s (§4) |
+| `kernels/simlod/remo_accum.cuh` | the subpass: clear-inner pass, descent, normalisation, `labeled_partition` reduction, Morton. **RemoBench's own file, not vendored** — carries no upstream header, unlike its neighbours |
 
 **Modified**
 
@@ -482,7 +490,7 @@ saying so.
   — the aggregation idiom; do not write a second one.
 - `processRange` (`utils.h.cu:79-96`) — and its block-contiguous distribution, which §3.5
   depends on for locality. Do not "fix" it here; CLAUDE.md's shared-path rule and
-  `clod_prelude.cuh:38-46` both explain why it is the way it is.
+  `remo_prelude.cuh:38-46` both explain why it is the way it is.
 - The stats pass at `:989-1006` — already walks the pool by index; the invariants of §7 are
   two counters inside it, not a new pass.
 - `GpuScope` / `simlod.construct` — no new timing scope. The subpass is inside the existing
@@ -509,3 +517,110 @@ them.
 - **Subsampling as policy rather than fallback.** §3.4 lists it as a performance escape hatch,
   but if Analysis only ever uses these sums to steer recursion, a fixed stride may be the
   right default and the full-rate accumulation the special case.
+
+---
+
+## 10. What actually landed, and where this plan was wrong
+
+*Added after implementation. The plan above is kept as written; this section records where it
+was superseded, because the reasoning it was superseded by is the useful part.*
+
+### 10.1 The hook became a separate kernel
+
+§2.3 chose "a separate pass that re-traverses the batch" over an `#ifdef`-guarded macro. Both
+options in that pair assumed the pass would live **inside** `addBatch`, as a seventh phase of
+`kernel_construct`. That is what shipped first, and it was wrong twice over.
+
+**It broke the baseline.** Adding the subpass meant adding two parameters to
+`kernel_construct` — a vendored kernel. The host launch was never updated to pass them.
+`cuLaunchCooperativeKernel` reads one entry per declared parameter, found ten where the kernel
+wanted twelve, and failed **every** launch with `CUDA_ERROR_INVALID_VALUE`. The SimLOD
+pipeline built no tree at all — 0 points, 1 node — for a whole commit, while `make` succeeded,
+`--check-kernels` passed and `--dump-frame` exited 0 with a valid image of an empty tree.
+
+The rule that came out of it: `simlod` and `cudalod` are **external comparison baselines** and
+are never edited. RemoLOD forks what it needs into `kernels/remolod/`.
+`bench/check_vendored.sh` asserts it mechanically.
+
+**And the separate launch is simply better.** `kernel_accumulate` runs after
+`kernel_construct` returns and reads the finished tree:
+
+| | the hook (§1–§4) | what landed |
+| --- | --- | --- |
+| finding a point's leaf | descend 20 levels from the root, per point per batch | it is already in the leaf's chunk list |
+| atomics | 15 per point, warp-aggregated to survive it | one uncontended read-modify-write per leaf |
+| warp aggregation | required (`labeled_partition` over `coalesced_threads`) | not needed; a block owns a whole leaf |
+| spill buffer | must be re-traversed explicitly | never seen; split children just walk from 0 |
+| `batchIndex` | needed | only for `lastTouchedBatch` |
+| timing | buried inside `simlod.construct` | its own `remolod.accumulate` scope |
+| baseline | edits vendored code | touches nothing |
+
+§3.4's warp-aggregation analysis is therefore moot, and so is the concern in §3.5 that
+aggregation would underperform on non-Morton-ordered input — there is nothing left to
+aggregate.
+
+### 10.2 `count` is the watermark
+
+The plan had no incremental mechanism; the subpass folded each batch's points as they were
+inserted. The separate pass needs one, and `NodeAccum::count` already is one:
+`insertPoints` stores points densely at `[0, numPoints)` and only ever appends, so folding
+`[count, node->numPoints)` and setting `count = numPoints` is exact.
+
+This also answers §3.3 more cleanly than the plan does. A split sets the parent to
+`numPoints = 0` and hands its points to fresh children, so clearing the parent (which the pass
+does anyway, because inner nodes hold no sums) and letting the children walk from `count == 0`
+re-accumulates the redistributed points exactly once. No double-counting to reason about, and
+a launch that is skipped or interrupted just leaves more to do next time.
+
+### 10.3 The acceptance test lost half of itself
+
+§7's first check — `--dump-frame` byte-identical across the change — **is not available**, and
+never was. Only `flat` is run-to-run deterministic. Every octree pipeline colours a voxel from
+the first point to reach its cell, so which *thread* wins decides the colour and two runs of
+the same binary on the same file differ. This is first-come sampling doing exactly what
+`README.md` criticises it for; it is one of the things colour filtering is meant to fix.
+
+What replaces it: **structural counts identical with the pass on and off**, via
+`--remolod-no-accum` (a real flag, because a GUI-only toggle would make the test
+unscriptable). §7's second check survives intact and is the strong one.
+
+Measured on `morro_bay_36M`:
+
+```
+accum sum/points    36200706 / 36200706  ok
+accum inner w/ sums 0  ok
+accum folded total  37540263
+remolod.construct   n=4  med 10.75 ms
+remolod.accumulate  n=4  med  2.49 ms
+```
+
+Structural counts are identical with the accumulator on and off (36,200,706 points /
+12,742,751 voxels / 4,137 nodes), and `remolod.construct` is unchanged between the two
+(41.09 ms vs 41.06 ms total) — the pass adds no cost to construction, only its own launch.
+
+`folded total` exceeding `numPoints` by 3–5% is the re-walk after splits, and is the number to
+watch if the pass ever looks expensive: it is the only redundant work in it. It varies between
+runs (37.5M–37.9M observed) because each time-budgeted construct launch consumes a different
+number of batches, so the splits fall in different places. `sum/points` is exact regardless,
+which is the point of having both.
+
+### 10.4 `AccumGlobals::numAtomicGroups` became `numLeavesFolded`
+
+§4's departure note added `numAtomicGroups` to measure the warp-aggregation ratio. With no
+warp aggregation left there is nothing to measure, so the field is now `numLeavesFolded` plus
+`pointsFolded`, both describing the launch that just ran. Same 40-byte layout.
+
+### 10.5 Staging, as executed
+
+§6's Stage 1/2/3 split assumed the risky part was the arithmetic under aggregation. In the end
+Stages 2 and 3 collapsed into one — the unaggregated reference implementation *is* the block
+reduction, there is no second version to check it against — and the work that mattered was
+undoing the vendored edit. Stage 4 (exposing it) landed as `diagnostics()` on `ILodPipeline`,
+so `--dump-frame` prints the invariants for any pipeline that has some.
+
+### 10.6 Still open
+
+- §9's list is untouched; all four are still Analysis decisions.
+- The Morton watermark is maintained and correctly oriented, and is still **not a closure
+  oracle** — nothing sorts points into Morton order. §3.5 stands.
+- `lastTouchedBatch` is written but read by nobody, as designed.

@@ -8,7 +8,7 @@
 
 
 // Vendored third-party code; not kept warning-clean. Wrapped so its warnings do
-// not drown ours, the same accommodation made in clod/unsuck.hpp.
+// not drown ours, the same accommodation made in remo/unsuck.hpp.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wunused-variable"
@@ -16,7 +16,7 @@
 #pragma GCC diagnostic ignored "-Wunused-result"
 #pragma GCC diagnostic ignored "-Wsign-compare"
 
-#include "clod/unsuck.hpp"
+#include "remo/unsuck.hpp"
 
 EventQueue *EventQueue::instance = new EventQueue();
 

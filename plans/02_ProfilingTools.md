@@ -2,9 +2,9 @@
 
 ## TL;DR
 
-- **ClodGen is a measurement instrument whose measurement layer is three doubles.** `ILodPipeline` exposes `buildDeviceMsTotal`, `renderDeviceMsLast` and `buildLaunchCount` (`include/clod/ILodPipeline.h:177-179`), filled inconsistently by the three pipelines, aggregated into running sums, and printed once at exit. Every architectural decision in this repo — one shared shell, one budget handed unchanged to every pipeline, health flags that invalidate a run — exists so that two LOD algorithms can be compared honestly. The timing layer is the one part that has not kept up.
-- **The single most important defect: SimLOD's render time is not measured at all.** `SimlodPipeline::render` and `CudalodPipeline::render` record no CUDA events. Only `FlatPipeline` fills `renderDeviceMsLast`. The GUI and the dump block print `0.00` for the other two, formatted identically to a real measurement.
-- **The plan is four layers, staged.** (1) A `GpuProfiler` owned by the shell, handed to pipelines through `FrameContext`, replacing the ad-hoc `CUevent` pairs. (2) Retained per-launch samples with Welford statistics and percentiles, replacing running sums. (3) A device-side `DeviceTimeline` for intra-kernel phase attribution, compiled in only under `-DCLOD_PROFILE`. (4) A `--bench` run mode writing NDJSON time series with full provenance.
+- **RemoBench is a measurement instrument whose measurement layer is three doubles.** `ILodPipeline` exposes `buildDeviceMsTotal`, `renderDeviceMsLast` and `buildLaunchCount` (`include/remo/ILodPipeline.h:177-179`), filled inconsistently by the three pipelines, aggregated into running sums, and printed once at exit. Every architectural decision in this repo — one shared shell, one budget handed unchanged to every pipeline, health flags that invalidate a run — exists so that two LOD algorithms can be compared honestly. The timing layer is the one part that has not kept up.
+- **The single most important defect: SimLOD's render time is not measured at all.** `SimlodPipeline::render` and `CudalodPipeline::render` record no CUDA events. Only `RemolodPipeline` fills `renderDeviceMsLast`. The GUI and the dump block print `0.00` for the other two, formatted identically to a real measurement.
+- **The plan is four layers, staged.** (1) A `GpuProfiler` owned by the shell, handed to pipelines through `FrameContext`, replacing the ad-hoc `CUevent` pairs. (2) Retained per-launch samples with Welford statistics and percentiles, replacing running sums. (3) A device-side `DeviceTimeline` for intra-kernel phase attribution, compiled in only under `-DREMO_PROFILE`. (4) A `--bench` run mode writing NDJSON time series with full provenance.
 - **Layer 3 exists because both pipelines are cooperative megakernels.** A `CUevent` pair can only ever say "`kernel_construct` took 8.1 ms". Whether that is expansion, voxel creation, or point insertion is invisible to every host-side timer, and to `ncu` as well. Only `%globaltimer` inside the kernel can see it — and SimLOD's author already instrumented exactly those phases, then wired them to a no-op.
 - **The immediate payoff is that `bench/reference/` stops being hand-transcribed.** The existing CudaLOD reference table doubles as an oracle for the new instrument: if `--bench` does not reproduce 4.9 / 4.7 / 20.1 / 60.9 ms per strategy, the profiler is wrong.
 
@@ -14,7 +14,7 @@
 
 ### 1.1 SimLOD and CudaLOD render time is never measured
 
-`SimlodPipeline::render` (`src/pipelines/SimlodPipeline.cpp:370-411`) and `CudalodPipeline::render` (`src/pipelines/CudalodPipeline.cpp:367-406`) launch their render kernels with no `cuEventRecord` on either side. Only `FlatPipeline` assigns `renderDeviceMsLast` (`src/pipelines/FlatPipeline.cpp:158-184`).
+`SimlodPipeline::render` (`src/pipelines/SimlodPipeline.cpp:370-411`) and `CudalodPipeline::render` (`src/pipelines/CudalodPipeline.cpp:367-406`) launch their render kernels with no `cuEventRecord` on either side. Only `RemolodPipeline` assigns `renderDeviceMsLast` (`src/pipelines/RemolodPipeline.cpp:158-184`).
 
 Consequently `SettingsPanel.cpp:109` (`ImGui::Text("render kernel: %.2f ms", ...)`) and `App.cpp:549` (`printf("  render device ms    %.2f\n", ...)`) render a default-initialised `0.0` in the same format as a genuine measurement. This is worse than a missing number: it is a *plausible* number. The first metric the research needs — SimLOD render time — is the one metric that does not exist.
 
@@ -39,13 +39,13 @@ cudaprint->print("t_00_70: {:.3f}, t_00_10: {:.3f}, expand: {:.3f}, "
                  "createVoxels: {:.3f}, ... insertPoints: {:.3f}, ...", ...);
 ```
 
-`CudaPrint` is a no-op on both ends. Its own header says so (`kernels/simlod/CudaPrint.cuh:1-11`): `print()` returns immediately and the host half is entirely commented out upstream. ClodGen passes it a 1 KB dummy allocation precisely so the vendored kernel signature does not have to change (`SimlodPipeline.cpp:156-158`).
+`CudaPrint` is a no-op on both ends. Its own header says so (`kernels/simlod/CudaPrint.cuh:1-11`): `print()` returns immediately and the host half is entirely commented out upstream. RemoBench passes it a 1 KB dummy allocation precisely so the vendored kernel signature does not have to change (`SimlodPipeline.cpp:156-158`).
 
 Separately, `durationExpandMS` is computed at `progressive_octree_voxels.cu:965` and never read by anything.
 
 So the labels `expand`, `createVoxels`, `insertPoints` — the exact intra-kernel breakdown the research wants — are already being computed on-device, every launch, and discarded.
 
-**Why this cannot be recovered any other way.** Every kernel in both pipelines is a single cooperative launch using `cg::this_grid().sync()`; this is stated as a load-bearing constraint at `include/clod/ILodPipeline.h:13-14`. A `CUevent` pair therefore brackets *the entire algorithm*, not a phase of it. Nsight Compute cannot subdivide it either — its kernel-level replay does not support grid-wide sync, and even with application replay the unit of measurement is still the whole kernel. Intra-kernel attribution in a megakernel is only available from inside the kernel.
+**Why this cannot be recovered any other way.** Every kernel in both pipelines is a single cooperative launch using `cg::this_grid().sync()`; this is stated as a load-bearing constraint at `include/remo/ILodPipeline.h:13-14`. A `CUevent` pair therefore brackets *the entire algorithm*, not a phase of it. Nsight Compute cannot subdivide it either — its kernel-level replay does not support grid-wide sync, and even with application replay the unit of measurement is still the whole kernel. Intra-kernel attribution in a megakernel is only available from inside the kernel.
 
 ### 1.4 Two measurement regimes silently mix
 
@@ -63,9 +63,9 @@ Four layers. Each is independently useful, and the staging in §3 orders them by
 
 ### Layer 1 — `GpuProfiler` and `GpuScope`, owned by the shell
 
-**New files:** `include/clod/GpuProfiler.h`, `src/shell/GpuProfiler.cpp`.
+**New files:** `include/remo/GpuProfiler.h`, `src/shell/GpuProfiler.cpp`.
 
-The comment at `include/clod/ILodPipeline.h:5` already states the rule: a pipeline does not own "the window, the camera, the loader, the rasterizer, EDL, the GL blit, timing or stats plumbing — all of that is shared, which is the entire point: it is what makes two pipelines comparable." The current per-pipeline `CUevent` pairs violate that rule, and defect 1.1 is the direct consequence — a pipeline that simply forgets to record an event produces a zero that looks like data.
+The comment at `include/remo/ILodPipeline.h:5` already states the rule: a pipeline does not own "the window, the camera, the loader, the rasterizer, EDL, the GL blit, timing or stats plumbing — all of that is shared, which is the entire point: it is what makes two pipelines comparable." The current per-pipeline `CUevent` pairs violate that rule, and defect 1.1 is the direct consequence — a pipeline that simply forgets to record an event produces a zero that looks like data.
 
 A profiler pointer joins `FrameContext`, next to the `strictTiming` flag that is already there:
 
@@ -86,13 +86,13 @@ Pipelines name their own scopes, so the shell never needs a list of them:
 // SimlodPipeline::build
 {
     GpuScope s(*frame.profiler, "simlod.construct");
-    CLOD_CU(cuLaunchCooperativeKernel(construct, grid, 1, 1, m_blockSize, 1, 1, 0, 0, args));
+    REMO_CU(cuLaunchCooperativeKernel(construct, grid, 1, 1, m_blockSize, 1, 1, 0, 0, args));
 }
 
 // SimlodPipeline::render  -- the measurement that does not exist today
 {
     GpuScope s(*frame.profiler, "simlod.render");
-    CLOD_CU(cuLaunchCooperativeKernel(kernel, grid, 1, 1, m_blockSize, 1, 1, 0, 0, kernelArgs));
+    REMO_CU(cuLaunchCooperativeKernel(kernel, grid, 1, 1, m_blockSize, 1, 1, 0, 0, kernelArgs));
 }
 ```
 
@@ -104,7 +104,7 @@ Pipelines name their own scopes, so the shell never needs a list of them:
 - Every sample records which regime produced it. `Regime::Strict` and `Regime::Deferred` samples are accumulated separately and never pooled. This closes defect 1.4 structurally rather than by convention.
 - Scopes nest. `simlod.construct` may contain `simlod.construct.reset`; the profiler stores the parent chain so a flame-style breakdown is available later without re-instrumenting.
 
-**What this replaces.** The event members and the duplicated `eventMs()` helper in `SimlodPipeline.cpp:49-53`, `CudalodPipeline.cpp:53-57` and `FlatPipeline.cpp` all go away, along with `m_buildStart`/`m_buildEnd`, `m_splitStart`/`m_splitEnd`, `m_voxelStart`/`m_voxelEnd`, `m_renderStart`/`m_renderEnd` and their create/destroy bookkeeping in `allocate()` and `release()`. Net line count is roughly flat; the difference is that a pipeline can no longer *fail to measure* something, because the scope is at the launch site.
+**What this replaces.** The event members and the duplicated `eventMs()` helper in `SimlodPipeline.cpp:49-53`, `CudalodPipeline.cpp:53-57` and `RemolodPipeline.cpp` all go away, along with `m_buildStart`/`m_buildEnd`, `m_splitStart`/`m_splitEnd`, `m_voxelStart`/`m_voxelEnd`, `m_renderStart`/`m_renderEnd` and their create/destroy bookkeeping in `allocate()` and `release()`. Net line count is roughly flat; the difference is that a pipeline can no longer *fail to measure* something, because the scope is at the launch site.
 
 **Scope names.** Flat, dotted, stable — they become column names in the output, so they are part of the data format:
 
@@ -116,13 +116,13 @@ Pipelines name their own scopes, so the shell never needs a list of them:
 | `cudalod.split` | CudaLOD | `kernel2`, split + counting sort |
 | `cudalod.voxelize` | CudaLOD | `kernel3`, per strategy |
 | `cudalod.render` | CudaLOD | `kernel_render` |
-| `flat.render` | Flat | the baseline rasteriser |
+| `remolod.render` | RemoLOD | the baseline rasteriser |
 
-`flat.render` matters more than it looks: `FlatPipeline` does no LOD at all, so it is the control against which both LOD renderers' cost is interpreted.
+`remolod.render` matters more than it looks: `RemolodPipeline` does no LOD at all, so it is the control against which both LOD renderers' cost is interpreted.
 
 ### Layer 2 — retain samples, not sums
 
-**Touches:** `include/clod/GpuProfiler.h`, `src/shell/SettingsPanel.cpp`, `include/clod/ILodPipeline.h`.
+**Touches:** `include/remo/GpuProfiler.h`, `src/shell/SettingsPanel.cpp`, `include/remo/ILodPipeline.h`.
 
 Per scope name, the profiler keeps:
 
@@ -143,42 +143,42 @@ struct ScopeStats {
 
 ### Layer 3 — `DeviceTimeline`, replacing the CudaPrint no-op
 
-**Touches:** `include/clod/HostDeviceCommon.h`, `kernels/shared/clod_prelude.cuh`, `kernels/simlod/progressive_octree_voxels.cu`, `kernels/cudalod/kernel.cu`, the two pipelines' readback functions.
+**Touches:** `include/remo/HostDeviceCommon.h`, `kernels/shared/remo_prelude.cuh`, `kernels/simlod/progressive_octree_voxels.cu`, `kernels/cudalod/kernel.cu`, the two pipelines' readback functions.
 
 This is the layer that gets `expand` / `createVoxels` / `insertPoints` out of the megakernel, and it is the only layer that touches vendored device code.
 
-**The provenance constraint, and how it is respected.** Both `include/clod/ILodPipeline.h:100-104` and `kernels/simlod/HostDeviceInterface.h:5-7` state the rule: rewriting the structs the reference kernels read is how a port silently stops reproducing its published numbers. The CMake preamble states a related rule about never including a file that a patch modifies.
+**The provenance constraint, and how it is respected.** Both `include/remo/ILodPipeline.h:100-104` and `kernels/simlod/HostDeviceInterface.h:5-7` state the rule: rewriting the structs the reference kernels read is how a port silently stops reproducing its published numbers. The CMake preamble states a related rule about never including a file that a patch modifies.
 
-The resolution is a compile-time guard. Marks are written through a macro that expands to *nothing* unless `CLOD_PROFILE` is defined:
+The resolution is a compile-time guard. Marks are written through a macro that expands to *nothing* unless `REMO_PROFILE` is defined:
 
 ```cpp
-// kernels/shared/clod_prelude.cuh
-#ifdef CLOD_PROFILE
-  #define CLOD_MARK(tl, phase)                                  \
+// kernels/shared/remo_prelude.cuh
+#ifdef REMO_PROFILE
+  #define REMO_MARK(tl, phase)                                  \
       do { if (cg::this_grid().thread_rank() == 0) {            \
              uint32_t i = (tl)->numMarks++;                     \
-             if (i < CLOD_MAX_MARKS) {                          \
+             if (i < REMO_MAX_MARKS) {                          \
                (tl)->marks[i].phase = (phase);                  \
                (tl)->marks[i].ns    = nanotime();               \
              } } } while (0)
 #else
-  #define CLOD_MARK(tl, phase) ((void)0)
+  #define REMO_MARK(tl, phase) ((void)0)
 #endif
 ```
 
 The default build therefore emits byte-identical device code to today's, and the numbers it produces remain directly comparable to the upstream reference. The profiling build is a *declared, separate measurement mode* — the same discipline `FrameContext::strictTiming` already applies on the host side, and for the same reason.
 
-The variant is requested through the existing `KernelProgramDesc::defines` field (`include/clod/CudaModularProgram.h`), which is documented as being part of the compile cache key. Both variants therefore cache side by side on disk and hot reload independently; no cache invalidation work is needed.
+The variant is requested through the existing `KernelProgramDesc::defines` field (`include/remo/CudaModularProgram.h`), which is documented as being part of the compile cache key. Both variants therefore cache side by side on disk and hot reload independently; no cache invalidation work is needed.
 
-**The buffer**, declared next to `DeviceDiagnostics` in `include/clod/HostDeviceCommon.h:173-186`:
+**The buffer**, declared next to `DeviceDiagnostics` in `include/remo/HostDeviceCommon.h:173-186`:
 
 ```cpp
-constexpr uint32_t CLOD_MAX_MARKS = 256;
+constexpr uint32_t REMO_MAX_MARKS = 256;
 
 struct DeviceTimeline {
     uint32_t numMarks;
-    uint32_t overflow;              // more phases than CLOD_MAX_MARKS
-    struct { uint32_t phase; uint32_t pad; uint64_t ns; } marks[CLOD_MAX_MARKS];
+    uint32_t overflow;              // more phases than REMO_MAX_MARKS
+    struct { uint32_t phase; uint32_t pad; uint64_t ns; } marks[REMO_MAX_MARKS];
 };
 ```
 
@@ -249,7 +249,7 @@ The header's provenance fields all come from things that already exist: `CudaCon
 
 **Stage 2 — Layer 4.** `--bench`, the orbit path, NDJSON. Turns the instrument into data on disk and makes `bench/reference/` reproducible rather than transcribed. Depends on Stage 1 only.
 
-**Stage 3 — Layer 3.** `DeviceTimeline` and the `CLOD_PROFILE` build variant. Deepest, highest-risk, and the only stage touching vendored device code — hence last, and hence guarded. By this point Stages 1 and 2 provide the CUevent totals that the phase sums are validated against.
+**Stage 3 — Layer 3.** `DeviceTimeline` and the `REMO_PROFILE` build variant. Deepest, highest-risk, and the only stage touching vendored device code — hence last, and hence guarded. By this point Stages 1 and 2 provide the CUevent totals that the phase sums are validated against.
 
 ---
 
@@ -271,12 +271,12 @@ The instrument is necessary but not sufficient; the protocol is what makes the n
 Each stage has a concrete acceptance test, and one of them is an oracle that already exists.
 
 **Stage 1.**
-- `clodgen --pipeline simlod --open data/morro_bay_35M/morro_bay_36M.simlod --strict-timing` — `simlod.render` must be non-zero and stable. This is the regression that defect 1.1 describes.
+- `remobench --pipeline simlod --open data/morro_bay_35M/morro_bay_36M.simlod --strict-timing` — `simlod.render` must be non-zero and stable. This is the regression that defect 1.1 describes.
 - Existing behaviour unchanged: `--dump-frame` still prints the same stats block with the same build totals, since the compatibility facade computes them from the profiler.
 - Profiler overhead: frame time with and without scopes must be indistinguishable in the deferred regime. A profiler that costs a measurable fraction of the frame is measuring itself.
 
 **Stage 2 — the oracle.**
-- `clodgen --pipeline cudalod --open data/morro_bay_35M/morro_bay_36M.simlod --bench`, once per sampling strategy. The `cudalod.split` and `cudalod.voxelize` medians must land on the table already recorded in `bench/reference/README.md`:
+- `remobench --pipeline cudalod --open data/morro_bay_35M/morro_bay_36M.simlod --bench`, once per sampling strategy. The `cudalod.split` and `cudalod.voxelize` medians must land on the table already recorded in `bench/reference/README.md`:
 
   | strategy | split | voxelize |
   |---|---|---|
@@ -290,7 +290,7 @@ Each stage has a concrete acceptance test, and one of them is an oracle that alr
 - Finally, capture the SimLOD baseline that `bench/reference/README.md` currently lists as missing — upstream cannot be scripted, but `--bench` can, which is the point.
 
 **Stage 3.**
-- `clodgen --check-kernels` must pass both with and without `-DCLOD_PROFILE`, confirming both variants compile and link.
+- `remobench --check-kernels` must pass both with and without `-DREMO_PROFILE`, confirming both variants compile and link.
 - The default build's cached LTOIR must be unchanged from before Stage 3 — the guard's whole purpose.
 - **The cross-check:** for the same launch, the sum of `DeviceTimeline` phase deltas must agree with the Layer 1 `CUevent` measurement to within a few percent. This validates both layers simultaneously — a disagreement means either an unmarked phase or a mark that is not sitting on a barrier.
 - Sanity against known behaviour: under CudaLOD strategy 3, the voxelisation phase marks must show the ~13× cost over strategy 0 that the reference table attributes to `kernel3`, localised to the sampling phase rather than smeared across the kernel.
@@ -303,7 +303,7 @@ Each stage has a concrete acceptance test, and one of them is an oracle that alr
 
 | path | contents |
 |---|---|
-| `include/clod/GpuProfiler.h` | `GpuProfiler`, `GpuScope`, `ScopeStats`, `Regime` |
+| `include/remo/GpuProfiler.h` | `GpuProfiler`, `GpuScope`, `ScopeStats`, `Regime` |
 | `src/shell/GpuProfiler.cpp` | event pool, ring, harvest, Welford, percentiles |
 | `src/shell/BenchRun.cpp` | orbit path, warm-up, NDJSON writer |
 
@@ -311,15 +311,15 @@ Each stage has a concrete acceptance test, and one of them is an oracle that alr
 
 | path | change |
 |---|---|
-| `include/clod/ILodPipeline.h` | `GpuProfiler*` in `FrameContext`; retire the three timing doubles at the end of Stage 1 |
-| `include/clod/HostDeviceCommon.h` | `DeviceTimeline`, `CLOD_MAX_MARKS` |
+| `include/remo/ILodPipeline.h` | `GpuProfiler*` in `FrameContext`; retire the three timing doubles at the end of Stage 1 |
+| `include/remo/HostDeviceCommon.h` | `DeviceTimeline`, `REMO_MAX_MARKS` |
 | `src/pipelines/SimlodPipeline.{h,cpp}` | scopes replace `m_buildStart`/`m_buildEnd` and the local `eventMs`; add the missing render scope; read `DeviceTimeline` in `readStats()` |
 | `src/pipelines/CudalodPipeline.{h,cpp}` | same, for split / voxelize / render; read `DeviceTimeline` in `readResults()` |
-| `src/pipelines/FlatPipeline.cpp` | same, for the baseline render scope |
+| `src/pipelines/RemolodPipeline.cpp` | same, for the baseline render scope |
 | `src/shell/App.{h,cpp}` | own the profiler, populate `FrameContext`, `--bench` options and driver |
 | `src/shell/SettingsPanel.cpp` | median / p95 in the timing rows |
 | `src/main.cpp` | parse and document the `--bench*` flags |
-| `kernels/shared/clod_prelude.cuh` | the `CLOD_MARK` macro and its `#ifdef` guard |
+| `kernels/shared/remo_prelude.cuh` | the `REMO_MARK` macro and its `#ifdef` guard |
 | `kernels/simlod/progressive_octree_voxels.cu` | guarded marks at the existing `t_00`..`t_70` points |
 | `kernels/cudalod/kernel.cu` | guarded marks in `kernel2` / `kernel3` |
 | `bench/reference/README.md` | note that the tables are now reproducible via `--bench` |
@@ -327,11 +327,11 @@ Each stage has a concrete acceptance test, and one of them is an oracle that alr
 **Reused rather than rebuilt**
 
 - `OrbitControls::frameBox()` (`src/shell/OrbitControls.h:91-100`) — bench camera seeding.
-- `KernelProgramDesc::defines` (`include/clod/CudaModularProgram.h`) — already part of the compile cache key, so the `CLOD_PROFILE` variant needs no cache work.
+- `KernelProgramDesc::defines` (`include/remo/CudaModularProgram.h`) — already part of the compile cache key, so the `REMO_PROFILE` variant needs no cache work.
 - `CudaContext` accessors — run-header provenance.
 - `nanotime()` (`kernels/simlod/utils.h.cu:322-327`) — the device clock read; do not write a second one.
-- `PipelineStats` health flags (`include/clod/ILodPipeline.h:126-131`) — per-sample `warn` and the harness exit code.
-- `now()`, `formatNumber()`, `writeFile()` from `include/clod/unsuck.hpp`.
+- `PipelineStats` health flags (`include/remo/ILodPipeline.h:126-131`) — per-sample `warn` and the harness exit code.
+- `now()`, `formatNumber()`, `writeFile()` from `include/remo/unsuck.hpp`.
 
 ---
 
@@ -341,13 +341,13 @@ Landed as described, with three deviations and one correction to the audit above
 
 ### 7.1 Defect 1.1 was worse than stated
 
-§1.1 says only `FlatPipeline` filled `renderDeviceMsLast`. It did — but **only under
-`--strict-timing`**. In the default regime `FlatPipeline::render` queried the event pair
+§1.1 says only `RemolodPipeline` filled `renderDeviceMsLast`. It did — but **only under
+`--strict-timing`**. In the default regime `RemolodPipeline::render` queried the event pair
 it had just re-recorded three lines earlier, so `cuEventElapsedTime` returned
 `CUDA_ERROR_NOT_READY` on every frame and the assignment never happened. The comment
 there described reading "last frame's numbers", which needs a double-buffered pair; the
 code had one pair. So in a default run **no pipeline had a render time**, not two of
-three. Measured before the change: `flat` printed `0.00` by default and `0.18` with
+three. Measured before the change: `remolod` printed `0.00` by default and `0.18` with
 `--strict-timing`, same scene.
 
 The profiler removes the failure mode rather than fixing the arithmetic: events are
@@ -380,7 +380,7 @@ Samples are dropped exactly when they stop describing the same work:
 
 - **On cloud load** — the whole profiler. A new scene invalidates everything.
 - **NOT on a pipeline switch.** The cloud, camera and pixel budget are unchanged, so
-  keeping `flat.render` alongside `simlod.render` is the entire point — the control
+  keeping `remolod.render` alongside `simlod.render` is the entire point — the control
   condition and the thing being measured, side by side. Verified: after
   `--switch-to cudalod --switch-after 20`, both scopes are present in one output.
 - **On a SimLOD reset**, `simlod.*` only. The tree those samples describe is gone.
@@ -426,7 +426,7 @@ Two things the running sum could not have shown:
    measurement, not an assumption.
 
 Render times now exist for all three pipelines in *both* regimes. On the same cloud,
-camera and pixel budget: `flat.render` 0.760 ms median (36.2M points, no selection)
+camera and pixel budget: `remolod.render` 0.760 ms median (36.2M points, no selection)
 against `cudalod.render` 0.105 ms median (374k visible samples). That comparison was
 not previously expressible.
 
@@ -435,11 +435,11 @@ vsync-bound at a 16.6–16.8 ms median, indistinguishable from each other.
 
 ### 7.5 Files, as built
 
-New: `include/clod/GpuProfiler.h`, `src/shell/GpuProfiler.cpp`,
+New: `include/remo/GpuProfiler.h`, `src/shell/GpuProfiler.cpp`,
 `src/shell/TimingUi.{h,cpp}` (one place that decides what an unmeasured scope looks
 like, shared by the panel and all three `gui()`s).
 
-Modified: `include/clod/ILodPipeline.h`, all three pipelines, `src/shell/App.{h,cpp}`,
+Modified: `include/remo/ILodPipeline.h`, all three pipelines, `src/shell/App.{h,cpp}`,
 `src/shell/SettingsPanel.cpp`, `CMakeLists.txt`. No device code was touched, so
 `--check-kernels` still reports 6 programs from 8 modules, 0 failed.
 

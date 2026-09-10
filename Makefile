@@ -1,13 +1,13 @@
-# ClodGen Makefile
+# RemoBench Makefile
 #
-# clodgen itself is built by CMake -- the dependency set (CUDA driver API, NVRTC,
+# remobench itself is built by CMake -- the dependency set (CUDA driver API, NVRTC,
 # nvJitLink, glfw, glew, imgui, implot, laszip) is not something to hand-roll in
 # Make. This half of the file is a thin facade so `make`, `make run`, `make debug`
 # and `make test` keep working; the second half drives the two reference
 # submodules and is deliberately unchanged.
 
 BUILD_DIR := build
-TARGET    := $(BUILD_DIR)/clodgen
+TARGET    := $(BUILD_DIR)/remobench
 
 # Extra args for `make run`, e.g.
 #   make run ARGS="--open data/morro_bay_35M/morro_bay_36M.simlod"
@@ -15,7 +15,7 @@ ARGS ?=
 
 CMAKE_FLAGS ?=
 
-.PHONY: all debug run test clean cmake-configure
+.PHONY: all debug run test check check-vendored check-kernels clean cmake-configure
 
 all: cmake-configure
 	cmake --build $(BUILD_DIR) --parallel
@@ -36,6 +36,22 @@ run: all
 test: all
 	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
+# What passes for a test suite until tests/unit/ has something in it.
+#
+# check-vendored needs no GPU and no build; check-kernels needs a CUDA context but no
+# display and no point cloud. Run `make check` after touching anything under kernels/.
+check: check-vendored check-kernels
+
+# Assert the comparison baselines are still byte-identical to their submodules. See the
+# banner in the script for the failure this exists to prevent.
+check-vendored:
+	@./bench/check_vendored.sh
+
+# A successful `make` does NOT mean the kernels compile -- every .cu under kernels/ is
+# compiled at runtime by NVRTC, so kernel errors are invisible to the build.
+check-kernels: all
+	@./$(TARGET) --check-kernels
+
 clean:
 	rm -rf $(BUILD_DIR) $(BUILD_DIR)-debug
 
@@ -43,7 +59,7 @@ clean:
 # Subrepos (external/, git submodules)
 #
 # These are independent upstream projects with their own build systems; they
-# are not compiled into clodgen. `make subrepos` lists what's wired up.
+# are not compiled into remobench. `make subrepos` lists what's wired up.
 # ---------------------------------------------------------------------------
 
 CUDA_PATH       ?= /usr/local/cuda

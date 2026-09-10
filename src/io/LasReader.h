@@ -37,9 +37,9 @@
 #include <string>
 #include <vector>
 
-#include "clod/PointSource.h"
+#include "remo/PointSource.h"
 
-namespace clod {
+namespace remo {
 
 // The subset of the LAS public header block this project needs. Parsed from the
 // first 375 bytes; no point data is touched.
@@ -99,4 +99,4 @@ bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
                    const double translation[3], Point* out,
                    double translatedBounds[6], std::string* err);
 
-}  // namespace clod
+}  // namespace remo

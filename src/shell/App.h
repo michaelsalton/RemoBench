@@ -12,24 +12,31 @@
 #include <string>
 #include <vector>
 
-#include "clod/CudaContext.h"
-#include "clod/GLInterop.h"
-#include "clod/GpuProfiler.h"
-#include "clod/HostDeviceCommon.h"
-#include "clod/ILodPipeline.h"
-#include "clod/PipelineRegistry.h"
-#include "clod/PointSource.h"
+#include "remo/CudaContext.h"
+#include "remo/GLInterop.h"
+#include "remo/GpuProfiler.h"
+#include "remo/HostDeviceCommon.h"
+#include "remo/ILodPipeline.h"
+#include "remo/PipelineRegistry.h"
+#include "remo/PointSource.h"
 #include "shell/GLRenderer.h"
 
-namespace clod {
+namespace remo {
 
 struct AppOptions {
 	std::vector<std::string> files;      // --open
 	uint64_t syntheticPoints = 0;        // --synthetic N (0 = off)
-	std::string pipeline = "flat";       // --pipeline
+	std::string pipeline = "flat";            // --pipeline
 	int width = 1600;
 	int height = 900;
 	bool strictTiming = false;           // --strict-timing
+
+	// --remolod-no-accum: build RemoLOD's octree without the accumulator pass.
+	//
+	// The pass mutates no tree state, so the structural counts must be identical with it on
+	// and off -- that is its acceptance test, and it has to be runnable from a script. Also
+	// the way to measure what the pass costs, by differencing two runs.
+	bool remolodNoAccum = false;
 
 	// --dump-frame <path.ppm>: render, write the colour attachment, exit.
 	//
@@ -178,4 +185,4 @@ private:
 	bool m_hasFrozen = false;
 };
 
-}  // namespace clod
+}  // namespace remo

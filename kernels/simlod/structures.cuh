@@ -1,15 +1,8 @@
-// Vendored from SimLOD: modules/progressive_octree/structures.cuh
+// Vendored from SimLOD: progressive_octree/structures.cuh
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// Node / Chunk / OccupancyGrid, and the tunables.
-//
-// Leaves hold original points and inner nodes hold voxels, both as a LINKED LIST of
-// 1000-point Chunks -- not a contiguous slice like CudaLOD. That is why the shared
-// rasteriser walks samples through a template Walker; see kernels/shared/clod_draw.cuh.
-//
-// ONE VALUE IS CHANGED FROM UPSTREAM: BATCH_STREAM_SIZE. See the comment at its
-// definition below.
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 #pragma once
 
 constexpr float PI = 3.1415;
@@ -31,35 +24,13 @@ constexpr bool ENABLE_TRACE = false;
 // constexpr float MAX_DEPTH_GRIDSIZE      = 16'777'216.0f;
 
 constexpr int MAX_POINTS_PER_NODE    = 50'000;
-
-// ADDED (upstream has no such constant).
-//
-// Upstream grows its flat Node pool with `atomicAdd(&stats->numNodes, 8)` and NO capacity
-// check anywhere, so an eagerly splitting tree walks off the end of the allocation. This is
-// the size the host allocates the pool to, so both kernels can clamp against it and the
-// host can report nodeCapacityReached instead of corrupting memory.
-constexpr uint32_t MAX_NODES_CAPACITY = 200'000;
 constexpr uint32_t POINTS_PER_CHUNK  = 1000;
 constexpr uint32_t GRID_SIZE         = 128;
 constexpr uint32_t GRID_NUM_CELLS    = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 constexpr int MAX_DEPTH              = 20;
 constexpr float MAX_DEPTH_GRIDSIZE   = 268'435'456.0f;
 
-// CHANGED FROM UPSTREAM (was 50).
-//
-// kernel_construct addresses batch N at points + (N % BATCH_STREAM_SIZE) *
-// MAX_BATCH_SIZE -- a ring of this many 1M-point slots. ClodGen currently feeds it
-// the whole cloud already resident in device memory, where batch N lives at
-// points + N * MAX_BATCH_SIZE with NO wrapping. Those two agree only while
-// N < BATCH_STREAM_SIZE, so at 50 the 36M reference cloud (37 batches) worked and
-// anything past 50M silently re-read slot 0.
-//
-// Raising it makes the non-wrapping addressing exact for any realistic cloud. It is
-// used in exactly three places -- here, that modulo, and a clearing loop in
-// reset.cu -- so this changes no algorithm; it only costs a larger batchSizes array
-// (4 bytes per slot). Revert to 50 when a real streaming ring lands, since that
-// genuinely does wrap.
-constexpr uint64_t BATCH_STREAM_SIZE = 8192;
+constexpr uint64_t BATCH_STREAM_SIZE = 50;
 
 struct Point{
 	float x;
@@ -176,12 +147,3 @@ struct Node{
 	}
 
 };
-
-// Guards kernels/simlod/simlod_layout.h, which the HOST uses to size the node pool because
-// this header is not host-compilable. If Node changes, fix that constant.
-#ifndef __CUDACC_RTC__
-#else
-static_assert(sizeof(Node) == 152, "update kNodeBytes in kernels/simlod/simlod_layout.h");
-static_assert(BATCH_STREAM_SIZE == 8192,
-              "update kBatchStreamSize in kernels/simlod/simlod_layout.h");
-#endif

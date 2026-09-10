@@ -6,7 +6,7 @@
 // with cuda/std/cstdint under NVRTC.
 //
 // The host/device contract for this pipeline: State, Results, SamplingStrategy.
-// Kept as upstream's, NOT merged into clod/HostDeviceCommon.h -- rewriting the struct
+// Kept as upstream's, NOT merged into remo/HostDeviceCommon.h -- rewriting the struct
 // the reference kernels read is how a port silently stops reproducing its numbers.
 
 #pragma once

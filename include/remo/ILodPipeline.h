@@ -37,10 +37,10 @@
 // Included rather than forward-declared: every pipeline needs GpuScope at its launch
 // sites, so this is the header that makes the launch-site scope the path of least
 // resistance.
-#include "clod/GpuProfiler.h"
-#include "clod/HostDeviceCommon.h"
+#include "remo/GpuProfiler.h"
+#include "remo/HostDeviceCommon.h"
 
-namespace clod {
+namespace remo {
 
 class PointSource;
 struct CloudMeta;
@@ -48,7 +48,7 @@ struct CloudMeta;
 // ---------------------------------------------------------------------------
 
 struct PipelineInfo {
-	std::string id;           // "simlod", "cudalod", "flat", ...
+	std::string id;           // "simlod", "cudalod", "remolod", ...
 	std::string displayName;
 
 	// Consumes point batches incrementally across frames and can render a partial
@@ -208,6 +208,15 @@ public:
 	// everything a pipeline needs arrives as a parameter, which is the property that
 	// lets more than one of them exist.
 	virtual void gui(const GpuProfiler& profiler) { (void)profiler; }
+
+	// Pipeline-specific quantities for --dump-frame, as "label\tvalue" lines.
+	//
+	// PipelineStats is deliberately the common shape every pipeline reports, so it cannot
+	// carry RemoLOD's accumulator invariants or CudaLOD's sampling strategy. Those still
+	// have to be assertable from a script: tests/unit/ is empty, and this repo's rule is
+	// that a GUI-only readout is a readout nobody checks. A pipeline with nothing extra to
+	// say returns nothing, and --dump-frame prints no extra lines.
+	virtual std::vector<std::string> diagnostics() const { return {}; }
 };
 
 // Sum of a pipeline's build scopes, and the count of launches behind it.
@@ -238,4 +247,4 @@ inline BuildTotals buildTotals(const GpuProfiler& profiler,
 
 using PipelineFactory = std::function<std::unique_ptr<ILodPipeline>()>;
 
-}  // namespace clod
+}  // namespace remo

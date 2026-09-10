@@ -10,7 +10,7 @@
 
 #pragma once
 
-namespace clod {
+namespace remo {
 
 struct Input {
 	// GLFW_KEY_LAST is 348; round up.
@@ -36,4 +36,4 @@ struct Input {
 	}
 };
 
-}  // namespace clod
+}  // namespace remo

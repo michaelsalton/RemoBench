@@ -30,7 +30,7 @@
 
 #include "shell/Input.h"
 
-namespace clod {
+namespace remo {
 
 class OrbitControls {
 public:
@@ -132,4 +132,4 @@ private:
 	glm::dvec2 m_mousePos = {0.0, 0.0};
 };
 
-}  // namespace clod
+}  // namespace remo

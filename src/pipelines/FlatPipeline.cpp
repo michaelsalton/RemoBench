@@ -2,14 +2,14 @@
 
 #include <imgui.h>
 
-#include "clod/CudaCheck.h"
-#include "clod/CudaContext.h"
-#include "clod/GpuProfiler.h"
-#include "clod/PointSource.h"
+#include "remo/CudaCheck.h"
+#include "remo/CudaContext.h"
+#include "remo/GpuProfiler.h"
+#include "remo/PointSource.h"
 #include "shell/TimingUi.h"
 
-namespace clod {
-
+namespace remo {
+	
 namespace {
 // Render scratch: 8 bytes per pixel for the packed framebuffer, plus slack for the
 // accumulation targets a high-quality path will want. Derived from the viewport
@@ -54,13 +54,13 @@ bool FlatPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget,
 	m_stats.numPoints = meta.numPoints;
 
 	if (!m_diagnostics) {
-		if (CLOD_CU(cuMemAlloc(&m_diagnostics, sizeof(DeviceDiagnostics))) !=
+		if (REMO_CU(cuMemAlloc(&m_diagnostics, sizeof(DeviceDiagnostics))) !=
 		    CUDA_SUCCESS) {
 			if (err) *err = "cuMemAlloc failed for diagnostics";
 			return false;
 		}
 	}
-	CLOD_CU(cuMemsetD8(m_diagnostics, 0, sizeof(DeviceDiagnostics)));
+	REMO_CU(cuMemsetD8(m_diagnostics, 0, sizeof(DeviceDiagnostics)));
 
 	m_stats.bytesCapacity = budget.bytes;
 	return true;
@@ -68,12 +68,12 @@ bool FlatPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget,
 
 void FlatPipeline::release() {
 	if (m_scratch) {
-		CLOD_CU(cuMemFree(m_scratch));
+		REMO_CU(cuMemFree(m_scratch));
 		m_scratch = 0;
 		m_scratchBytes = 0;
 	}
 	if (m_diagnostics) {
-		CLOD_CU(cuMemFree(m_diagnostics));
+		REMO_CU(cuMemFree(m_diagnostics));
 		m_diagnostics = 0;
 	}
 	m_points = 0;
@@ -84,7 +84,7 @@ void FlatPipeline::reset() {
 	// No structure to clear. Diagnostics are cleared so a previously reported
 	// overflow does not stick around and mislabel a good run.
 	if (m_diagnostics) {
-		CLOD_CU(cuMemsetD8(m_diagnostics, 0, sizeof(DeviceDiagnostics)));
+		REMO_CU(cuMemsetD8(m_diagnostics, 0, sizeof(DeviceDiagnostics)));
 	}
 	m_stats.allocOverflow = false;
 }
@@ -122,9 +122,9 @@ void FlatPipeline::render(const FrameContext& frame) {
 		pixels * kBytesPerPixel < kMinScratchBytes ? kMinScratchBytes
 		                                           : pixels * kBytesPerPixel;
 	if (needed > m_scratchBytes) {
-		if (m_scratch) CLOD_CU(cuMemFree(m_scratch));
+		if (m_scratch) REMO_CU(cuMemFree(m_scratch));
 		m_scratch = 0;
-		if (CLOD_CU(cuMemAlloc(&m_scratch, needed)) != CUDA_SUCCESS) {
+		if (REMO_CU(cuMemAlloc(&m_scratch, needed)) != CUDA_SUCCESS) {
 			m_scratchBytes = 0;
 			return;
 		}
@@ -154,7 +154,7 @@ void FlatPipeline::render(const FrameContext& frame) {
 
 	{
 		GpuScope scope(frame.profiler, "flat.render");
-		CLOD_CU(cuLaunchCooperativeKernel(kernel, static_cast<unsigned>(grid), 1, 1,
+		REMO_CU(cuLaunchCooperativeKernel(kernel, static_cast<unsigned>(grid), 1, 1,
 		                                  static_cast<unsigned>(m_blockSize), 1, 1, 0,
 		                                  0, kernelArgs));
 	}
@@ -165,7 +165,7 @@ void FlatPipeline::render(const FrameContext& frame) {
 	// the event pair it had just re-recorded, got CUDA_ERROR_NOT_READY every time, and
 	// so never assigned a render time at all outside --strict-timing.
 	if (frame.strictTiming) {
-		CLOD_CU(cuCtxSynchronize());
+		REMO_CU(cuCtxSynchronize());
 	}
 
 	DeviceDiagnostics diagnostics = {};
@@ -201,4 +201,4 @@ void FlatPipeline::gui(const GpuProfiler& profiler) {
 	}
 }
 
-}  // namespace clod
+}  // namespace remo

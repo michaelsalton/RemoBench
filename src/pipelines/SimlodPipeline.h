@@ -11,9 +11,22 @@
 // until it is done. That is the comparison neither upstream repo can make, because they are
 // separate binaries with different loaders and different rasterisers.
 //
-// Device code is vendored unmodified apart from ONE constant (BATCH_STREAM_SIZE, see
-// kernels/simlod/structures.cuh), so the numbers stay verifiable against bench/reference/.
-// Only the renderer is replaced, by a selection pass feeding the shared rasteriser.
+// THIS IS AN EXTERNAL COMPARISON BASELINE. Its device code is vendored BYTE-IDENTICAL to
+// external/SimLOD -- bench/check_vendored.sh asserts it -- so the numbers stay verifiable
+// against bench/reference/. Only the renderer is replaced, by a selection pass feeding the
+// shared rasteriser.
+//
+// Do not edit kernels/simlod/ to make something else work. RemoLOD is the pipeline that gets
+// to change things, and it forks into kernels/remolod/. The accumulator was once spliced into
+// kernel_construct here; it added two parameters the host never passed, and this pipeline
+// silently built no tree at all for a whole commit. See kernels/simlod/VENDORED.md.
+//
+// THE 50M POINT CEILING is a direct consequence of staying byte-identical. kernel_construct
+// addresses batch N at (N % BATCH_STREAM_SIZE) with upstream's BATCH_STREAM_SIZE == 50, and
+// RemoBench feeds it a resident cloud with no wrapping, so past 50 batches it re-reads slot 0
+// and builds from the wrong points -- silently, since nothing faults.
+// PipelineRegistry::unsupportedReason refuses such clouds. Lifting the limit means a genuinely
+// wrapping ring in PointSource, NOT another edit to structures.cuh.
 //
 // HOW IT IS FED, and the current limitation:
 //
@@ -42,10 +55,10 @@
 #include <memory>
 #include <string>
 
-#include "clod/CudaModularProgram.h"
-#include "clod/ILodPipeline.h"
+#include "remo/CudaModularProgram.h"
+#include "remo/ILodPipeline.h"
 
-namespace clod {
+namespace remo {
 
 class CudaContext;
 
@@ -119,4 +132,4 @@ private:
 	uint32_t m_batchesTotal = 0;
 };
 
-}  // namespace clod
+}  // namespace remo

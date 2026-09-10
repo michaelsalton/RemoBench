@@ -6,4 +6,11 @@
 # `remobench --check-kernels` reads these files so it links modules the way the pipeline
 # actually does. That matters because not every .cu is a standalone translation unit --
 # see kernels/cudalod/programs.txt for the case that forced this.
-flat_render.cu
+#
+# Four, where SimLOD has three. remolod_accum.cu is the extra one: the accumulator is a
+# separate LAUNCH rather than a subpass inside the octree kernel, which is what lets
+# kernels/simlod/ stay byte-identical to upstream. See the banner in remolod_accum.cu.
+remolod_reset.cu
+remolod_octree.cu
+remolod_accum.cu
+remolod_render.cu

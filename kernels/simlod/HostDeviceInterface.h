@@ -1,15 +1,8 @@
-// Vendored from SimLOD: modules/progressive_octree/HostDeviceInterface.h
+// Vendored from SimLOD: progressive_octree/HostDeviceInterface.h
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// SimLOD's own host/device contract: Uniforms and Stats. Deliberately NOT merged into
-// clod/HostDeviceCommon.h -- rewriting the struct the reference kernels read is how a port
-// silently stops reproducing its published numbers.
-//
-// Note several Uniforms fields are plumbed but never read by any kernel (LOD,
-// doProgressive, colorWhite, updateStats, enableEDL, edlStrength). ClodGen drives shading
-// from SharedUniforms instead, so those stay unused here rather than becoming placebo
-// controls.
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 
 #pragma once
 

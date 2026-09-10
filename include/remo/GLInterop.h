@@ -18,7 +18,7 @@
 
 #include <cuda.h>
 
-namespace clod {
+namespace remo {
 
 class GLInterop {
 public:
@@ -58,4 +58,4 @@ private:
 	bool m_mapped = false;
 };
 
-}  // namespace clod
+}  // namespace remo

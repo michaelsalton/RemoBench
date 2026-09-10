@@ -28,9 +28,9 @@
 
 #include <cuda.h>
 
-#include "clod/HostDeviceCommon.h"
+#include "remo/HostDeviceCommon.h"
 
-namespace clod {
+namespace remo {
 
 class CudaContext;
 
@@ -126,4 +126,4 @@ std::unique_ptr<PointSource> openPointSource(CudaContext& cuda,
                                              const std::vector<std::string>& files,
                                              std::string* err);
 
-}  // namespace clod
+}  // namespace remo

@@ -1,7 +1,7 @@
 # Reference baselines
 
 Upstream SimLOD / CudaLOD numbers captured on this machine, via `make simlod` and
-`make cudalod`. These are the oracle ClodGen's ported pipelines are validated
+`make cudalod`. These are the oracle RemoBench's ported pipelines are validated
 against — not legacy cruft. Recapture after any submodule bump or driver change.
 
 ## Machine
@@ -40,7 +40,7 @@ then rebuilds each time a strategy button is pressed:
 
 Strategy 1 (`RANDOM`) was not exercised in this capture.
 
-Two things worth carrying into ClodGen's own benchmarking:
+Two things worth carrying into RemoBench's own benchmarking:
 
 - **The strategies are not close.** `WEIGHTED_NEIGHBORHOOD` — the paper's quality
   contribution — voxelizes 13x slower than `FIRST_COME` (60.9 ms vs 4.7 ms) for
@@ -80,11 +80,11 @@ build, and the render phase crashed. All three fixes are in
 
 With those, the run is clean: **0** illegal-access errors across all four builds.
 
-## ClodGen's port vs the reference
+## RemoBench's port vs the reference
 
-`clodgen --pipeline cudalod --open data/morro_bay_35M/morro_bay_36M.simlod --dump-frame x.ppm`
+`remobench --pipeline cudalod --open data/morro_bay_35M/morro_bay_36M.simlod --dump-frame x.ppm`
 
-| metric | reference | ClodGen port | |
+| metric | reference | RemoBench port | |
 | ------ | --------- | ------------ | --- |
 | points | 36,200,706 | 36,200,706 | exact |
 | nodes | 2,252 | 2,252 (517 inner, 1,735 leaves) | exact |
@@ -101,7 +101,7 @@ unmodified, so the tree really is the same tree.
 
 This entry used to explain the +388 as an f32-vs-f64 bounding-box difference: the
 reference reads the `.las`, whose header carries an f64 extent of `1399.9900000002235`,
-while ClodGen read the `.simlod`, whose header is f32 (`1399.989990234375`); CudaLOD
+while RemoBench read the `.simlod`, whose header is f32 (`1399.989990234375`); CudaLOD
 derives `cubeSize` from the longest axis, so a last-bit difference would shift the 128³
 grid's cell boundaries. It was recorded as needing the `.las` reader to confirm.
 

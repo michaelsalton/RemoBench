@@ -1,6 +1,8 @@
-// Vendored from SimLOD: modules/progressive_octree/rasterization.cuh
+// Vendored from SimLOD: progressive_octree/rasterization.cuh
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 #pragma once
 
 #include "structures.cuh"

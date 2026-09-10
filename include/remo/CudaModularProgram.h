@@ -44,7 +44,7 @@
 
 #include <cuda.h>
 
-namespace clod {
+namespace remo {
 
 class CudaModularProgram;
 
@@ -75,14 +75,14 @@ struct KernelProgramDesc {
 
 	LinkMode linkMode = LinkMode::LtoIr;
 
-	// Extra NVRTC options, e.g. "-DCLOD_LOD_PIXELS=1". Part of the cache key.
+	// Extra NVRTC options, e.g. "-DREMO_LOD_PIXELS=1". Part of the cache key.
 	std::vector<std::string> defines;
 
 	// Watch each module and recompile on save. Off for one-shot/test compiles.
 	bool watch = true;
 };
 
-// Returns the kernels root: $CLODGEN_KERNEL_DIR, else the compiled-in source path,
+// Returns the kernels root: $REMOBENCH_KERNEL_DIR, else the compiled-in source path,
 // else ./kernels.
 const std::string& kernelRoot();
 
@@ -160,4 +160,4 @@ private:
 	std::vector<std::function<void()>> m_callbacks;
 };
 
-}  // namespace clod
+}  // namespace remo

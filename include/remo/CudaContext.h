@@ -23,7 +23,7 @@
 
 #include <cuda.h>
 
-namespace clod {
+namespace remo {
 
 class CudaContext {
 public:
@@ -72,4 +72,4 @@ private:
 	int m_ccMinor = 0;
 };
 
-}  // namespace clod
+}  // namespace remo

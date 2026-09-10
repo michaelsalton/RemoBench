@@ -1,10 +1,8 @@
-// Vendored from SimLOD: modules/progressive_octree/reset.cu
+// Vendored from SimLOD: progressive_octree/reset.cu
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// Clears the octree and initialises the persistent allocator in place. Factored out of
-// the construct kernel upstream, which is why progressive_octree_mno.cu still tries to
-// reset inline via a Uniforms field that no longer exists.
+// Byte-identical to upstream below this line. Notes: kernels/simlod/VENDORED.md
+
 // Some code in this file, particularly frustum, ray and intersection tests, 
 // is adapted from three.js. Three.js is licensed under the MIT license
 // This file this follows the three.js licensing
@@ -20,7 +18,7 @@
 
 #include "math.cuh"
 #include "structures.cuh"
-#include "CudaPrint.cuh"
+#include "../CudaPrint/CudaPrint.cuh"
 
 namespace cg = cooperative_groups;
 

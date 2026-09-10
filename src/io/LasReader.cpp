@@ -11,7 +11,7 @@
 
 namespace fs = std::filesystem;
 
-namespace clod {
+namespace remo {
 
 namespace {
 
@@ -349,4 +349,4 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 	return true;
 }
 
-}  // namespace clod
+}  // namespace remo

@@ -22,9 +22,9 @@
 // 36M points, so slicing is what distributes the work -- and it gives colour-by-node
 // something to show, which makes the slicing visible.
 
-#include "shared/clod_pipeline.cuh"
+#include "shared/remo_pipeline.cuh"
 
-using namespace clod;
+using namespace remo;
 
 // Samples per synthetic "node". 64k keeps the draw list small (a 350M cloud needs
 // ~5300 items) while still giving every SM many items to chew on.
@@ -41,12 +41,12 @@ extern "C" __global__ void kernel_render(RenderArgs args, Point* points,
 	const SharedUniforms& u = args.uniforms;
 
 	// Every thread walks the identical allocation sequence -- see the banner in
-	// clod_alloc.cuh. Do not move any alloc() behind a condition.
-	ClodAllocator alloc(args.scratch, args.scratchCapacity, diag);
+	// remo_alloc.cuh. Do not move any alloc() behind a condition.
+	RemoAllocator alloc(args.scratch, args.scratchCapacity, diag);
 	const uint64_t numPixels =
 		static_cast<uint64_t>(u.width) * static_cast<uint64_t>(u.height);
 	uint64_t* framebuffer = alloc.alloc<uint64_t*>(8ull * numPixels);
-	DrawList drawList = clodAllocDrawList(alloc, FLAT_DRAWLIST_CAPACITY);
+	DrawList drawList = remoAllocDrawList(alloc, FLAT_DRAWLIST_CAPACITY);
 	// Samples referenced by the emitted items, for the stats panel.
 	uint64_t* sampleCount = alloc.alloc<uint64_t*>(8);
 
@@ -56,8 +56,8 @@ extern "C" __global__ void kernel_render(RenderArgs args, Point* points,
 		return;
 	}
 
-	clodClearFramebuffer(framebuffer, u);
-	clodResetDrawList(drawList);
+	remoClearFramebuffer(framebuffer, u);
+	remoResetDrawList(drawList);
 	if (grid.thread_rank() == 0) *sampleCount = 0ull;
 	grid.sync();
 
@@ -83,7 +83,7 @@ extern "C" __global__ void kernel_render(RenderArgs args, Point* points,
 		item.level = 0u;  // flat is level 0 by definition
 		item.nodeKey = static_cast<uint32_t>(sliceIndex);
 
-		if (clodDrawListAppend(drawList, item)) {
+		if (remoDrawListAppend(drawList, item)) {
 			atomicAdd(reinterpret_cast<unsigned long long*>(sampleCount),
 			          static_cast<unsigned long long>(item.points.count) +
 			              static_cast<unsigned long long>(item.voxels.count));
@@ -92,19 +92,19 @@ extern "C" __global__ void kernel_render(RenderArgs args, Point* points,
 	grid.sync();
 
 	// Points and voxels share one storage layout here, so one walker covers both.
-	clodRasterizeDrawList<ClodContiguousWalker>(drawList, framebuffer, u);
+	remoRasterizeDrawList<RemoContiguousWalker>(drawList, framebuffer, u);
 	grid.sync();
 
-	clodApplyEDL(framebuffer, u);
+	remoApplyEDL(framebuffer, u);
 	grid.sync();
 
 	// Inert here by design: flat's items are point-array slices, not nodes, so they
 	// carry no box. It goes through the same seam anyway rather than being omitted --
 	// the control condition exercising the shared path is the whole point of `flat`.
-	clodDrawListWireframe(drawList, framebuffer, u);
+	remoDrawListWireframe(drawList, framebuffer, u);
 	grid.sync();
 
-	clodResolve(framebuffer, u, static_cast<cudaSurfaceObject_t>(args.surface));
+	remoResolve(framebuffer, u, static_cast<cudaSurfaceObject_t>(args.surface));
 
 	// Publish what was drawn, so the stats panel is not guessing.
 	if (grid.thread_rank() == 0 && diag != nullptr) {

@@ -14,7 +14,7 @@
 // Why the trick works: for non-negative IEEE-754 floats, the bit pattern compares
 // in the same order as the value. Depth goes in the high 32 bits, so an unsigned
 // 64-bit atomicMin picks the nearest fragment and carries its colour along for
-// free. Negative depths would break the ordering, which is why clodProject rejects
+// free. Negative depths would break the ordering, which is why remoProject rejects
 // anything with w <= 0 rather than clamping it.
 //
 // This file is shared by every pipeline, which is the point. Feeding two different
@@ -27,40 +27,40 @@
 
 #pragma once
 
-#include "shared/clod_math.cuh"
+#include "shared/remo_math.cuh"
 
-namespace clod {
+namespace remo {
 
 // Depth = +inf, colour = a dark background. Matches upstream's sentinel so that
 // "was anything drawn here" tests behave identically.
-constexpr uint64_t CLOD_FB_CLEAR = 0x7f800000'00332211ull;
+constexpr uint64_t REMO_FB_CLEAR = 0x7f800000'00332211ull;
 
-inline uint32_t clodFbColor(uint64_t pixel) {
+inline uint32_t remoFbColor(uint64_t pixel) {
 	return static_cast<uint32_t>(pixel & 0xFFFFFFFFull);
 }
 
-inline float clodFbDepth(uint64_t pixel) {
+inline float remoFbDepth(uint64_t pixel) {
 	const uint32_t bits = static_cast<uint32_t>(pixel >> 32);
 	return __int_as_float(static_cast<int>(bits));
 }
 
-inline uint64_t clodFbPack(float depth, uint32_t color) {
+inline uint64_t remoFbPack(float depth, uint32_t color) {
 	const uint64_t bits = static_cast<uint32_t>(__float_as_int(depth));
 	return (bits << 32) | static_cast<uint64_t>(color);
 }
 
 // Grid-wide clear. Caller must grid.sync() afterwards before rasterising.
-inline void clodClearFramebuffer(uint64_t* fb, const SharedUniforms& u) {
+inline void remoClearFramebuffer(uint64_t* fb, const SharedUniforms& u) {
 	const uint64_t numPixels =
 		static_cast<uint64_t>(u.width) * static_cast<uint64_t>(u.height);
-	processRangeStrided(numPixels, [&](uint64_t i) { fb[i] = CLOD_FB_CLEAR; });
+	processRangeStrided(numPixels, [&](uint64_t i) { fb[i] = REMO_FB_CLEAR; });
 }
 
 // Splat one sample as a pointSize x pointSize square.
-inline void clodDrawPoint(uint64_t* fb, const SharedUniforms& u, float x, float y,
+inline void remoDrawPoint(uint64_t* fb, const SharedUniforms& u, float x, float y,
                           float z, uint32_t color) {
 	float px, py, depth;
-	if (!clodProject(u.transform, x, y, z, u.width, u.height, px, py, depth)) return;
+	if (!remoProject(u.transform, x, y, z, u.width, u.height, px, py, depth)) return;
 
 	const int32_t half = u.pointSize / 2;
 	const int32_t ix = static_cast<int32_t>(px);
@@ -72,7 +72,7 @@ inline void clodDrawPoint(uint64_t* fb, const SharedUniforms& u, float x, float 
 	// once the camera is inside a large cloud.
 	if (ix + half < 0 || iy + half < 0 || ix - half >= w || iy - half >= h) return;
 
-	const uint64_t packed = clodFbPack(depth, color);
+	const uint64_t packed = remoFbPack(depth, color);
 
 	for (int32_t oy = -half; oy <= half; ++oy) {
 		const int32_t sy = iy + oy;
@@ -90,7 +90,7 @@ inline void clodDrawPoint(uint64_t* fb, const SharedUniforms& u, float x, float 
 }
 
 // Resolve to the GL texture. 16x16 tiles, matching upstream.
-inline void clodResolve(uint64_t* fb, const SharedUniforms& u,
+inline void remoResolve(uint64_t* fb, const SharedUniforms& u,
                         cudaSurfaceObject_t surface) {
 	const uint32_t width = static_cast<uint32_t>(u.width);
 	const uint32_t height = static_cast<uint32_t>(u.height);
@@ -100,7 +100,7 @@ inline void clodResolve(uint64_t* fb, const SharedUniforms& u,
 	processRangeStrided(numPixels, [&](uint64_t i) {
 		const uint32_t x = static_cast<uint32_t>(i % width);
 		const uint32_t y = static_cast<uint32_t>(i / width);
-		uint32_t color = clodFbColor(fb[i]);
+		uint32_t color = remoFbColor(fb[i]);
 		// GL's origin is bottom-left; our y grows downward from the projection above.
 		surf2Dwrite(color, surface, static_cast<int>(x) * 4, static_cast<int>(y));
 	});
@@ -116,7 +116,7 @@ inline void clodResolve(uint64_t* fb, const SharedUniforms& u,
 // not a cosmetic bug -- it invalidates any experiment where someone believed they
 // had changed the shading.
 // ---------------------------------------------------------------------------
-inline void clodApplyEDL(uint64_t* fb, const SharedUniforms& u) {
+inline void remoApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 	if (u.enableEDL == 0) return;
 
 	const int32_t width = static_cast<int32_t>(u.width);
@@ -129,7 +129,7 @@ inline void clodApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 		const int32_t y = static_cast<int32_t>(i / static_cast<uint64_t>(width));
 
 		const uint64_t pixel = fb[i];
-		const float depth = clodFbDepth(pixel);
+		const float depth = remoFbDepth(pixel);
 		if (!(depth < 3.0e38f)) return;  // nothing drawn here
 
 		const float logDepth = __log2f(depth);
@@ -141,7 +141,7 @@ inline void clodApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 			const int32_t nx = x + offsets[t][0];
 			const int32_t ny = y + offsets[t][1];
 			if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-			const float nd = clodFbDepth(
+			const float nd = remoFbDepth(
 				fb[static_cast<uint64_t>(ny) * static_cast<uint64_t>(width) +
 				   static_cast<uint64_t>(nx)]);
 			if (!(nd < 3.0e38f)) continue;
@@ -163,12 +163,12 @@ inline void clodApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 		constexpr float kEdlScale = 24.0f;
 		const float shade = __expf(-response * kEdlScale * u.edlStrength);
 
-		const uint32_t color = clodFbColor(pixel);
+		const uint32_t color = remoFbColor(pixel);
 		const uint32_t r = static_cast<uint32_t>((color & 0xFFu) * shade);
 		const uint32_t g = static_cast<uint32_t>(((color >> 8) & 0xFFu) * shade);
 		const uint32_t b = static_cast<uint32_t>(((color >> 16) & 0xFFu) * shade);
-		fb[i] = clodFbPack(depth, clodPackRGBA(r, g, b, 255u));
+		fb[i] = remoFbPack(depth, remoPackRGBA(r, g, b, 255u));
 	});
 }
 
-}  // namespace clod
+}  // namespace remo

@@ -10,7 +10,7 @@
 // Leaves hold a contiguous slice of one globally counting-sorted Point array
 // (pointOffset + numPoints), and inner nodes hold voxels as a plain Point*. That is
 // why the shared rasteriser walks samples through a template Walker -- SimLOD uses a
-// linked list of chunks instead. See kernels/shared/clod_draw.cuh.
+// linked list of chunks instead. See kernels/shared/remo_draw.cuh.
 
 #include "lib.h.cu"
 

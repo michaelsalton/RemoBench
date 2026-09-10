@@ -7,18 +7,18 @@
 #include <algorithm>
 #include <cstring>
 
-#include "clod/CudaCheck.h"
-#include "clod/CudaContext.h"
-#include "clod/GpuProfiler.h"
-#include "clod/PointSource.h"
+#include "remo/CudaCheck.h"
+#include "remo/CudaContext.h"
+#include "remo/GpuProfiler.h"
+#include "remo/PointSource.h"
 #include "shell/TimingUi.h"
 
 // The pipeline's own host/device contract, vendored unmodified. Deliberately NOT merged
-// into clod/HostDeviceCommon.h: rewriting the struct the reference kernels read is how a
+// into remo/HostDeviceCommon.h: rewriting the struct the reference kernels read is how a
 // port silently stops reproducing its published numbers.
 #include "../../kernels/cudalod/common.h"
 
-namespace clod {
+namespace remo {
 namespace {
 
 // Bytes of device slab per input point.
@@ -136,7 +136,7 @@ bool CudalodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 	}
 	m_slabBytes = std::min(want, available);
 
-	if (CLOD_CU(cuMemAlloc(&m_slab, m_slabBytes)) != CUDA_SUCCESS) {
+	if (REMO_CU(cuMemAlloc(&m_slab, m_slabBytes)) != CUDA_SUCCESS) {
 		if (err) {
 			*err = "cuMemAlloc failed for a " +
 			       std::to_string(m_slabBytes / (1024 * 1024)) + " MB LOD slab";
@@ -146,8 +146,8 @@ bool CudalodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 	}
 
 	auto allocCell = [&](CUdeviceptr* ptr, size_t bytes) {
-		if (CLOD_CU(cuMemAlloc(ptr, bytes)) != CUDA_SUCCESS) return false;
-		CLOD_CU(cuMemsetD8(*ptr, 0, bytes));
+		if (REMO_CU(cuMemAlloc(ptr, bytes)) != CUDA_SUCCESS) return false;
+		REMO_CU(cuMemsetD8(*ptr, 0, bytes));
 		return true;
 	};
 
@@ -171,7 +171,7 @@ void CudalodPipeline::release() {
 	                       &m_numNodes, &m_nodes, &m_sorted, &m_allocOffset,
 	                       &m_debugPoints, &m_debugLines}) {
 		if (*p) {
-			CLOD_CU(cuMemFree(*p));
+			REMO_CU(cuMemFree(*p));
 			*p = 0;
 		}
 	}
@@ -186,10 +186,10 @@ void CudalodPipeline::release() {
 void CudalodPipeline::reset() {
 	m_built = false;
 	m_rebuildRequested = false;
-	if (m_numNodes) CLOD_CU(cuMemsetD8(m_numNodes, 0, 4));
-	if (m_nodes) CLOD_CU(cuMemsetD8(m_nodes, 0, 8));
-	if (m_allocOffset) CLOD_CU(cuMemsetD8(m_allocOffset, 0, 8));
-	if (m_diagnostics) CLOD_CU(cuMemsetD8(m_diagnostics, 0, sizeof(DeviceDiagnostics)));
+	if (m_numNodes) REMO_CU(cuMemsetD8(m_numNodes, 0, 4));
+	if (m_nodes) REMO_CU(cuMemsetD8(m_nodes, 0, 8));
+	if (m_allocOffset) REMO_CU(cuMemsetD8(m_allocOffset, 0, 8));
+	if (m_diagnostics) REMO_CU(cuMemsetD8(m_diagnostics, 0, sizeof(DeviceDiagnostics)));
 	m_clearTimingRequested = true;
 }
 
@@ -248,8 +248,8 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 
 	// Reset the arena watermark before phase 1, or a rebuild appends to the previous
 	// build's allocations and runs off the end of the slab.
-	CLOD_CU(cuMemsetD8(m_allocOffset, 0, 8));
-	CLOD_CU(cuMemsetD8(m_numNodes, 0, 4));
+	REMO_CU(cuMemsetD8(m_allocOffset, 0, 8));
+	REMO_CU(cuMemsetD8(m_numNodes, 0, 4));
 
 	CUdeviceptr slab = m_slab, results = m_results, input = m_inputPoints;
 	CUdeviceptr nodes = m_nodes, numNodes = m_numNodes, sorted = m_sorted;
@@ -263,7 +263,7 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 	const int gridSplit = m_cuda.gridForKernel(kernel2, m_blockSize);
 	{
 		GpuScope scope(frame.profiler, "cudalod.split");
-		CLOD_CU(cuLaunchCooperativeKernel(kernel2, static_cast<unsigned>(gridSplit), 1, 1,
+		REMO_CU(cuLaunchCooperativeKernel(kernel2, static_cast<unsigned>(gridSplit), 1, 1,
 		                                  static_cast<unsigned>(m_blockSize), 1, 1, 0, 0,
 		                                  args));
 	}
@@ -281,7 +281,7 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 		if (isStickyError(sync)) {
 			reportDeadContextAndExit(sync, "CudaLOD kernel2 (split / counting sort)");
 		}
-		CLOD_CU(sync);
+		REMO_CU(sync);
 	}
 
 	// Phase 2: voxelise. EXACTLY one block per SM -- the strategies allocate a
@@ -290,7 +290,7 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 	const int gridVoxelize = m_cuda.gridForKernel(kernel3, m_blockSize, 1);
 	{
 		GpuScope scope(frame.profiler, "cudalod.voxelize");
-		CLOD_CU(cuLaunchCooperativeKernel(kernel3, static_cast<unsigned>(gridVoxelize), 1,
+		REMO_CU(cuLaunchCooperativeKernel(kernel3, static_cast<unsigned>(gridVoxelize), 1,
 		                                  1, static_cast<unsigned>(m_blockSize), 1, 1, 0,
 		                                  0, args));
 	}
@@ -304,7 +304,7 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 			reportDeadContextAndExit(
 				sync, "CudaLOD kernel3 (voxelize)");
 		}
-		CLOD_CU(sync);
+		REMO_CU(sync);
 	}
 
 	readResults();
@@ -317,7 +317,7 @@ void CudalodPipeline::readResults() {
 	if (!m_results) return;
 
 	Results r = {};
-	if (CLOD_CU(cuMemcpyDtoH(&r, m_results, sizeof(Results))) != CUDA_SUCCESS) return;
+	if (REMO_CU(cuMemcpyDtoH(&r, m_results, sizeof(Results))) != CUDA_SUCCESS) return;
 
 	m_stats.numPoints = r.points;
 	m_stats.numVoxels = r.voxels;
@@ -355,9 +355,9 @@ void CudalodPipeline::ensureScratch(int width, int height) {
 	needed += 256ull * 1024ull;
 	if (needed <= m_scratchBytes) return;
 
-	if (m_scratch) CLOD_CU(cuMemFree(m_scratch));
+	if (m_scratch) REMO_CU(cuMemFree(m_scratch));
 	m_scratch = 0;
-	if (CLOD_CU(cuMemAlloc(&m_scratch, needed)) != CUDA_SUCCESS) {
+	if (REMO_CU(cuMemAlloc(&m_scratch, needed)) != CUDA_SUCCESS) {
 		m_scratchBytes = 0;
 		return;
 	}
@@ -389,7 +389,7 @@ void CudalodPipeline::render(const FrameContext& frame) {
 		// As with SimLOD, this launch previously had no events on either side, so
 		// CudaLOD's render time was never measured at all.
 		GpuScope scope(frame.profiler, "cudalod.render");
-		CLOD_CU(cuLaunchCooperativeKernel(kernel, static_cast<unsigned>(grid), 1, 1,
+		REMO_CU(cuLaunchCooperativeKernel(kernel, static_cast<unsigned>(grid), 1, 1,
 		                                  static_cast<unsigned>(m_blockSize), 1, 1, 0, 0,
 		                                  kernelArgs));
 	}
@@ -399,7 +399,7 @@ void CudalodPipeline::render(const FrameContext& frame) {
 		if (isStickyError(sync)) {
 			reportDeadContextAndExit(sync, "CudaLOD render (kernel_render)");
 		}
-		CLOD_CU(sync);
+		REMO_CU(sync);
 	}
 
 	DeviceDiagnostics d = {};
@@ -474,4 +474,4 @@ void CudalodPipeline::gui(const GpuProfiler& profiler) {
 	}
 }
 
-}  // namespace clod
+}  // namespace remo

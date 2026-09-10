@@ -1,4 +1,4 @@
-# ClodGen
+# RemoBench
 
 A real-time LOD generation and rendering program for point clouds, aimed at lidar
 data. It is a research project: it extends [SimLOD](https://github.com/m-schuetz/SimLOD)
@@ -48,16 +48,44 @@ works under streaming ingestion; it has just never been pointed at rendering LOD
 All six are per-node reductions over points that have already been inserted, which is
 what keeps them compatible with a progressive builder.
 
+## The four pipelines
+
+RemoBench is the harness; the LOD algorithm is a swappable plugin. Four pipelines, all
+switchable at runtime:
+
+| id | role |
+| --- | --- |
+| `remolod` | **RemoLOD — this project's own pipeline.** The detail-aware work lives here |
+| `simlod` | external comparison baseline, progressive build |
+| `cudalod` | external comparison baseline, batch build |
+| `flat` | the control condition: no LOD, every point drawn — and the image-quality ground truth |
+
+**RemoLOD may pull anything it needs out of the comparison pipelines, but never changes
+them.** They are only worth having while they still reproduce their published numbers against
+[bench/reference/](bench/reference/README.md), so RemoLOD *forks* what it needs into
+`kernels/remolod/` and changes the fork. `make check-vendored` asserts that every vendored
+kernel is still byte-identical to its submodule.
+
+RemoLOD's octree is currently line-for-line SimLOD's apart from two constants, which is the
+intended starting point: while that holds, any difference between the two pipelines is
+attributable to the passes around construction rather than to a divergence inside it.
+
 ## Kernel architecture
 
-Four kernels
+Five kernels. Three exist; the last two are the project.
 
 | kernel | when | what it does |
 | --- | --- | --- |
-| **Rasterize** (SimLOD) | every frame, unconditionally | frustum test; descend while a node projects larger than the pixel budget; one block per visible node, `atomicMin` splatting |
-| **Update** (SimLOD + accumulator hook) | only when a batch completes | expand the octree (count → split → make room), voxel-sample the new points, acquire chunks, insert points and voxels |
+| **Rasterize** | every frame, unconditionally | frustum test; descend while a node projects larger than the pixel budget; one block per visible node, `atomicMin` splatting |
+| **Update** | only when a batch completes | expand the octree (count → split → make room), voxel-sample the new points, acquire chunks, insert points and voxels |
+| **Accumulate** | after each Update | fold each leaf's new points into per-node running sums — one block per dirty leaf, carrying a watermark so it only ever touches what changed |
 | **Analysis** (new) | every frame, unconditionally, per node | advance the watermark; test closure; roll leaf accumulators up the tree and finalise; score = geometric score × screen coverage, and enqueue — rebuilt each frame |
 | **Refinement** (new) | only if budget remains; may produce no changes | colour filtering; deepening (local split + redistribute); collapsing; compression, lagging closure by a widen margin |
+
+**Accumulate is a separate launch, not a hook inside Update.** It reads the finished tree, so
+it needs no access to the spill buffer, no batch index and no octree descent — the point is
+already at its leaf. That is what lets the SimLOD baseline stay byte-identical, and it is
+also simply cheaper: one uncontended write per leaf rather than atomics per point.
 
 The split between Analysis and Refinement is deliberate. Analysis is cheap, unconditional
 and side-effect-free on the tree; Refinement is the only thing that mutates it, and it is
@@ -109,15 +137,24 @@ images still differ, for reasons that have nothing to do with LOD quality.
 
 Working:
 
-- Three pipelines, switchable at runtime: `flat` (no LOD, the control), `cudalod`
-  (batch: counting-sort split + voxelisation, four sampling strategies), `simlod`
-  (progressive octree). All three go through the same `DrawList` seam and the same
-  rasteriser.
+- Four pipelines, switchable at runtime: `flat` (no LOD, the control), `remolod` (this
+  project's own), `cudalod` (batch: counting-sort split + voxelisation, four sampling
+  strategies), `simlod` (progressive octree). All four go through the same `DrawList` seam
+  and the same rasteriser.
+- **The per-node accumulator.** `remolod_accum.cu` maintains fifteen running sums plus a
+  count per node — the covariance and colour statistics the Analysis kernel will roll up.
+  A separate launch over the finished tree, one block per dirty leaf, carrying a per-node
+  watermark so it only ever folds points it has not seen. On `morro_bay_36M` it costs
+  ~2.5 ms per construct launch against ~10 ms for construction itself, and its two
+  invariants are printed by `--dump-frame`: `Σ leaf counts == numPoints` exactly
+  (36,200,706), and no inner node holds sums.
 - **Loading, all three formats.** `.simlod`, `.las` (eight loader threads, ~110–140 MP/s)
   and `.laz` (laszip, ~5 MP/s and sequential — see `src/io/LazReader.cpp`). The same cloud
   read through all three produces bit-identical trees (2,252 nodes, 12,742,500 voxels on
-  `morro_bay_36M`) and byte-identical `--dump-frame` output at both 36M and 350M points,
-  which is what says the parsers agree rather than merely all running. LAS/LAZ apply the
+  `morro_bay_36M`), which is what says the parsers agree rather than merely all running.
+  Compare structural counts rather than frames: only `flat` is run-to-run deterministic,
+  because every octree pipeline colours a voxel from the first point to reach its cell and
+  which *thread* wins is a scheduling accident. LAS/LAZ apply the
   translation in f64 inside the parse, so a UTM cloud keeps sub-millimetre resolution
   instead of the ~4 cm an f32 coordinate has at that magnitude.
 - CUDA software rasteriser: packed `uint64` `atomicMin` framebuffer, EDL,
@@ -160,6 +197,12 @@ Not there yet:
   contemplates.
 - **No quality metric harness.** `--dump-frame` writes a PPM; there is no Chamfer,
   Hausdorff or PCQM comparison against `flat`.
+- **SimLOD is capped at 50M points.** `kernel_construct` addresses batch N at
+  `(N % BATCH_STREAM_SIZE)` with upstream's `BATCH_STREAM_SIZE == 50`, and RemoBench feeds it
+  a resident cloud with no wrapping, so past 50 batches it re-reads slot 0. The pipeline
+  refuses such clouds rather than building a wrong tree. RemoLOD raises the constant in its
+  own fork and takes them; lifting it for `simlod` means the real wrapping ring in
+  `PointSource`, which is the streaming-loader item below.
 - **No benchmark harness.** Stage 1 of
   [plans/02_ProfilingTools.md](plans/02_ProfilingTools.md) landed the instrument; there
   is still no `--bench` writing an NDJSON time series over a deterministic camera orbit
@@ -171,7 +214,7 @@ Not there yet:
   shared pixel budget, but SimLOD's projects all eight corners and takes the screen
   AABB while CudaLOD's estimates from the node centre, so they do not interpret the
   budget identically. The native metrics are still selectable in the kernels
-  (`CLOD_LOD_SIMLOD_NATIVE`, `CLOD_LOD_CUDALOD_NATIVE`) but nothing on the host passes
+  (`REMO_LOD_SIMLOD_NATIVE`, `REMO_LOD_CUDALOD_NATIVE`) but nothing on the host passes
   them yet.
 - The streaming loader. `simlod` currently builds progressively from an
   already-resident cloud, which measures construction but not the paper's
@@ -194,13 +237,14 @@ Not there yet:
 ## Building and running
 
 ```sh
-make                              # release -> build/clodgen
+make                              # release -> build/remobench
 make debug                        # -O0 -g  -> build-debug/
+make check                        # check-vendored + check-kernels
 make run ARGS="--open data/morro_bay_35M/morro_bay_36M.simlod"
 make clean
 ```
 
-`make` is a thin façade over CMake. `clodgen --help` lists the options; point clouds
+`make` is a thin façade over CMake. `remobench --help` lists the options; point clouds
 can also be dropped on the window, but `--open` exists because a benchmark runner
 cannot drag a file.
 
@@ -209,8 +253,14 @@ runtime, so kernel errors are invisible to the build. After touching anything un
 `kernels/`:
 
 ```sh
-./build/clodgen --check-kernels   # no display, GPU context or point cloud needed
+make check                          # both checks below
+./build/remobench --check-kernels   # no display, GPU context or point cloud needed
+./bench/check_vendored.sh           # no GPU and no build needed either
 ```
+
+And note that **compiling is not launching**: `--check-kernels` links every program but
+launches none, so it cannot see a host/device signature mismatch. A kernel whose parameter
+list changed is only verified by running the pipeline and reading the structural counts.
 
 The reference implementations can be built and run for comparison:
 
@@ -223,7 +273,7 @@ make cudalod CUDALOD_LAS=/path/to/cloud.las     # same for CudaLOD
 
 ```
 .
-├── include/clod/    Public headers = the pipeline SDK (ILodPipeline.h is the contract)
+├── include/remo/    Public headers = the pipeline SDK (ILodPipeline.h is the contract)
 ├── src/
 │   ├── shell/       Window, orbit camera, GUI, pipeline registry
 │   ├── cuda/        NVRTC wrapper, CUDA context, GL interop
@@ -232,8 +282,10 @@ make cudalod CUDALOD_LAS=/path/to/cloud.las     # same for CudaLOD
 ├── kernels/         Device code, NVRTC-compiled at runtime and hot-reloaded
 │   ├── shared/      Rasteriser + allocators every pipeline #includes — keep it shared
 │   ├── flat/        The no-LOD control pipeline
-│   ├── cudalod/     Batch pipeline (vendored kernels + our selection pass)
-│   └── simlod/      Progressive pipeline (vendored kernels + our selection pass)
+│   ├── remolod/     RemoLOD — ours to change: forked octree, accumulator, selection
+│   ├── cudalod/     Comparison baseline, batch (vendored + our selection pass)
+│   ├── simlod/      Comparison baseline, progressive (vendored + our selection pass)
+│   └── CudaPrint/   Vendored from SimLOD; at this path so its include resolves unchanged
 ├── bench/reference/ Upstream baselines the ports are validated against
 ├── plans/           Research direction and staged implementation plans
 ├── references/      Source papers
@@ -245,7 +297,7 @@ make cudalod CUDALOD_LAS=/path/to/cloud.las     # same for CudaLOD
 
 ## Provenance
 
-ClodGen vendors code from both reference implementations, which are MIT. Every copied
+RemoBench vendors code from both reference implementations, which are MIT. Every copied
 file carries a three-line header naming its upstream path, commit and copyright. See
 [THIRD_PARTY.md](THIRD_PARTY.md) for the full record — including one file that is
 deliberately **not** used, because it is CC BY-NC-SA and would infect this project's
@@ -265,6 +317,6 @@ git submodule update --init --recursive
 | `external/CudaLOD` | https://github.com/m-schuetz/CudaLOD | branch `main` |
 | `external/glfw` | https://github.com/glfw/glfw | tag `3.4` |
 
-`clodgen` references `external/*/libs/**` only, and never a file that `patches/*.patch`
+`remobench` references `external/*/libs/**` only, and never a file that `patches/*.patch`
 modifies — so it builds after a bare `git submodule update --init`, whether or not the
 submodule patches have been applied.

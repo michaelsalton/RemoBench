@@ -35,7 +35,7 @@
 
 struct GLFWwindow;
 
-namespace clod {
+namespace remo {
 
 // Lazily-resized offscreen colour+depth target. CUDA renders into the colour
 // attachment via a registered surface; GL then blits it to the backbuffer.
@@ -149,4 +149,4 @@ private:
 	std::vector<std::function<void(const std::vector<std::string>&)>> m_dropCallbacks;
 };
 
-}  // namespace clod
+}  // namespace remo

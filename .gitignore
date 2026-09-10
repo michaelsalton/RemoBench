@@ -16,7 +16,7 @@ build-debug/
 *.exe
 
 # Executables
-clodgen
+remobench
 
 # Debug / profiling
 *.dSYM/

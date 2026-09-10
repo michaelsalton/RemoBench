@@ -1,8 +1,8 @@
-# Dependency wiring for clodgen.
+# Dependency wiring for remobench.
 #
 # THE RULE (see also the comment in CMakeLists.txt):
 #
-#   clodgen may reference external/*/libs/** only. It must never #include a file
+#   remobench may reference external/*/libs/** only. It must never #include a file
 #   that patches/*.patch modifies.
 #
 # Verified against both patch files: they touch CMakeLists.txt, include/*.h,
@@ -61,14 +61,14 @@ endif ()
 find_package(glfw3 3.3 QUIET)
 
 if (glfw3_FOUND)
-	message(STATUS "clodgen: using system glfw3 ${glfw3_VERSION}")
+	message(STATUS "remobench: using system glfw3 ${glfw3_VERSION}")
 else ()
 	if (NOT EXISTS "${CMAKE_SOURCE_DIR}/external/glfw/CMakeLists.txt")
 		message(FATAL_ERROR
 			"external/glfw is empty and no system glfw3 was found.\n"
 			"        Run: git submodule update --init --recursive")
 	endif ()
-	message(STATUS "clodgen: building external/glfw (submodule)")
+	message(STATUS "remobench: building external/glfw (submodule)")
 	set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 	set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 	set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
@@ -91,7 +91,7 @@ add_subdirectory("${SIMLOD_LIBS}/laszip" laszip EXCLUDE_FROM_ALL)
 # a 3-arg BeginPlot, both removed in modern ImPlot. Referencing the vendored copy
 # keeps that pin automatic rather than aspirational.
 # ---------------------------------------------------------------------------
-add_library(clodgen_thirdparty STATIC
+add_library(remobench_thirdparty STATIC
 	"${SIMLOD_LIBS}/glew/glew.c"
 	"${SIMLOD_LIBS}/imgui/imgui.cpp"
 	"${SIMLOD_LIBS}/imgui/imgui_draw.cpp"
@@ -103,7 +103,7 @@ add_library(clodgen_thirdparty STATIC
 	"${SIMLOD_LIBS}/implot/implot.cpp"
 	"${SIMLOD_LIBS}/implot/implot_items.cpp")
 
-target_include_directories(clodgen_thirdparty SYSTEM PUBLIC
+target_include_directories(remobench_thirdparty SYSTEM PUBLIC
 	"${SIMLOD_LIBS}/glew/include"
 	"${SIMLOD_LIBS}/glm"
 	"${SIMLOD_LIBS}/imgui"
@@ -112,19 +112,19 @@ target_include_directories(clodgen_thirdparty SYSTEM PUBLIC
 	"${SIMLOD_LIBS}/laszip")
 
 # GLEW_STATIC: we compile glew.c into this target rather than linking a .so.
-target_compile_definitions(clodgen_thirdparty PUBLIC GLEW_STATIC)
+target_compile_definitions(remobench_thirdparty PUBLIC GLEW_STATIC)
 
 # Third-party code is not ours to keep warning-clean.
-target_compile_options(clodgen_thirdparty PRIVATE -w)
+target_compile_options(remobench_thirdparty PRIVATE -w)
 
-target_link_libraries(clodgen_thirdparty PUBLIC glfw OpenGL::GL)
+target_link_libraries(remobench_thirdparty PUBLIC glfw OpenGL::GL)
 
 # ---------------------------------------------------------------------------
-# The interface target clodgen links against.
+# The interface target remobench links against.
 # ---------------------------------------------------------------------------
-add_library(clodgen_deps INTERFACE)
-target_link_libraries(clodgen_deps INTERFACE
-	clodgen_thirdparty
+add_library(remobench_deps INTERFACE)
+target_link_libraries(remobench_deps INTERFACE
+	remobench_thirdparty
 	laszip
 	CUDA::cuda_driver
 	CUDA::nvrtc
@@ -134,7 +134,7 @@ target_link_libraries(clodgen_deps INTERFACE
 # include/cccl -- where the CCCL / libcu++ headers (<cuda/std/*>, pulled in by
 # cooperative_groups) were relocated to. Do not append "/cccl" by hand; on CUDA 13
 # that yields "<a>;<b>/cccl" and, in a compile definition, an unterminated string.
-target_include_directories(clodgen_deps SYSTEM INTERFACE
+target_include_directories(remobench_deps SYSTEM INTERFACE
 	"${CUDAToolkit_INCLUDE_DIRS}")
 
 # Bake the toolkit include root in at configure time instead of reading CUDA_PATH
@@ -144,6 +144,6 @@ target_include_directories(clodgen_deps SYSTEM INTERFACE
 # Only the first element: this becomes a quoted C string, so it must be a single
 # path. CudaModularProgram derives the cccl subdirectory from it (a nonexistent -I
 # is harmless to NVRTC, so this is safe on CUDA 12 as well).
-list(GET CUDAToolkit_INCLUDE_DIRS 0 CLODGEN_CUDA_INCLUDE_ROOT)
-target_compile_definitions(clodgen_deps INTERFACE
-	CLODGEN_CUDA_INCLUDE_DIR="${CLODGEN_CUDA_INCLUDE_ROOT}")
+list(GET CUDAToolkit_INCLUDE_DIRS 0 REMOBENCH_CUDA_INCLUDE_ROOT)
+target_compile_definitions(remobench_deps INTERFACE
+	REMOBENCH_CUDA_INCLUDE_DIR="${REMOBENCH_CUDA_INCLUDE_ROOT}")
