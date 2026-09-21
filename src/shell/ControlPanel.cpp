@@ -1,78 +1,37 @@
+// The control panel: everything that changes what the program does. Read-outs
+// live in StatsPanel.cpp, so a screenshot of one panel answers "what was set"
+// and the other "what happened".
+
 #include <imgui.h>
-#include <imgui_internal.h>
-#include <implot.h>
 
-#include <cinttypes>
-
-#include "remo/GpuProfiler.h"
 #include "remo/unsuck.hpp"
 #include "shell/App.h"
-#include "shell/TimingUi.h"
+#include "shell/GuiWidgets.h"
 
 namespace remo {
 
-namespace {
-
-void sectionHeader(const char* label) {
-	ImGui::Spacing();
-	ImGui::Separator();
-	ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "%s", label);
-	ImGui::Spacing();
-}
-
-void beginDisabled(bool disabled) {
-	if (!disabled) return;
-	ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-	ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-}
-
-void endDisabled(bool disabled) {
-	if (!disabled) return;
-	ImGui::PopStyleVar();
-	ImGui::PopItemFlag();
-}
-
-void statRow(const char* label, uint64_t value) {
-	ImGui::TableNextRow();
-	ImGui::TableNextColumn();
-	ImGui::TextUnformatted(label);
-	ImGui::TableNextColumn();
-	ImGui::TextUnformatted(formatNumber(static_cast<double>(value)).c_str());
-}
-
-void statRowF(const char* label, const char* fmt, double value) {
-	ImGui::TableNextRow();
-	ImGui::TableNextColumn();
-	ImGui::TextUnformatted(label);
-	ImGui::TableNextColumn();
-	ImGui::Text(fmt, value);
-}
-
-}
-
 void App::drawGui() {
-	ILodPipeline* pipeline = m_registry.active();
+	drawControlPanel();
+	drawStatsPanel();
+}
 
-	ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(400, 700), ImGuiCond_FirstUseEver);
-	ImGui::Begin("RemoBench");
+void App::drawControlPanel() {
+	ImGui::SetNextWindowPos(ImVec2(kPanelMargin, kPanelMargin), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(kControlPanelWidth, 660), ImGuiCond_FirstUseEver);
+	ImGui::Begin("Controls");
 
 	if (!m_status.empty()) {
 		if (m_statusIsError) {
-			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "%s",
-			                   m_status.c_str());
+			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "%s", m_status.c_str());
 		} else {
 			ImGui::TextDisabled("%s", m_status.c_str());
 		}
 		ImGui::Separator();
 	}
 
-	ImGui::Text("%.1f fps  (%.2f ms, med %.2f, p95 %.2f)", m_renderer.fps(),
-	            m_renderer.frameMs(), m_frameTimeStats.median(),
-	            m_frameTimeStats.percentile(0.95));
-
 	{
 		constexpr float kExitWidth = 56.0f;
+		ImGui::TextDisabled("RemoBench");
 		ImGui::SameLine(ImGui::GetWindowContentRegionWidth() - kExitWidth);
 		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.13f, 0.11f, 1.0f));
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.18f, 0.15f, 1.0f));
@@ -81,23 +40,6 @@ void App::drawGui() {
 		ImGui::PopStyleColor(3);
 		if (ImGui::IsItemHovered()) ImGui::SetTooltip("quit RemoBench (or press Escape)");
 		if (exitClicked) m_renderer.requestClose();
-	}
-
-	if (pipeline) {
-		const TimingScopes scopes = pipeline->timingScopes();
-		if (ImGui::BeginTable("frame_timing", 2, ImGuiTableFlags_SizingStretchProp)) {
-			timingRow(m_profiler, "render kernel (ms)", scopes.render);
-			ImGui::EndTable();
-		}
-		ImGui::TextDisabled("timing regime: %s%s", regimeName(m_profiler.regime()),
-		                    m_profiler.regime() == Regime::Strict
-		                        ? ""
-		                        : "  (--strict-timing for per-frame attribution)");
-		if (m_profiler.droppedScopes() > 0) {
-			ImGui::TextColored(ImVec4(1, 0.6f, 0.2f, 1), "%llu timing sample(s) dropped",
-			                   static_cast<unsigned long long>(
-			                       m_profiler.droppedScopes()));
-		}
 	}
 
 	sectionHeader("Dataset");
@@ -164,7 +106,6 @@ void App::drawGui() {
 				            std::string(s.label) + " synthetic points");
 			}
 		}
-
 	}
 
 	sectionHeader("Pipeline");
@@ -239,70 +180,15 @@ void App::drawGui() {
 			"read it in a dense cloud.\n"
 			"\n"
 			"A view toggle only: selection still runs, so the visible-sample\n"
-			"counts below continue to report what the pipeline CHOSE and a\n"
-			"hidden frame is not mistaken for a cheap one.");
+			"counts in the dashboard continue to report what the pipeline\n"
+			"CHOSE and a hidden frame is not mistaken for a cheap one.");
 	}
 
-	sectionHeader("Cloud");
-	if (ImGui::BeginTable("cloud", 2, ImGuiTableFlags_SizingStretchProp)) {
-		statRow("points", m_meta.numPoints);
-		statRowF("extent x", "%.1f", m_meta.boxSize[0]);
-		statRowF("extent y", "%.1f", m_meta.boxSize[1]);
-		statRowF("extent z", "%.1f", m_meta.boxSize[2]);
-		ImGui::EndTable();
-	}
-
-	const double quantError = m_meta.worstQuantisationError();
-	if (quantError > 0.01) {
-		ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
-		                   "float32 precision at the far corner: %.3f m", quantError);
-	} else {
-		ImGui::TextDisabled("float32 precision at the far corner: %.4f m",
-		                    quantError);
-	}
-
-	sectionHeader("Device memory");
-	ImGui::Text("budget %.2f GB of %.2f GB total",
-	            double(m_budget.bytes) / 1e9, double(m_budget.vramTotal) / 1e9);
-	if (ImGui::IsItemHovered()) {
-		ImGui::SetTooltip(
-			"Computed once and handed unchanged to every pipeline, so memory\n"
-			"figures are comparable. Upstream instead grabs 80%% of whatever\n"
-			"happens to be free, which makes runs depend on what else was on\n"
-			"the GPU at the time.");
-	}
-
-	if (pipeline) {
-		const PipelineStats& s = pipeline->stats();
-
-		sectionHeader("Pipeline stats");
-		if (ImGui::BeginTable("stats", 2, ImGuiTableFlags_SizingStretchProp)) {
-			statRow("points", s.numPoints);
-			statRow("voxels", s.numVoxels);
-			statRow("nodes", s.numNodes);
-			statRow("visible nodes", s.numVisibleNodes);
-			statRow("visible samples", s.numVisiblePoints + s.numVisibleVoxels);
-			statRowF("scratch high water (MB)", "%.1f",
-			         double(s.bytesHighWater) / (1024.0 * 1024.0));
-			ImGui::EndTable();
-		}
-
-		if (s.allocOverflow) {
-			ImGui::TextColored(ImVec4(1, 0.25f, 0.2f, 1),
-			                   "ALLOCATOR OVERFLOW -- results are invalid");
-		}
-		if (s.nodeCapacityReached) {
-			ImGui::TextColored(ImVec4(1, 0.25f, 0.2f, 1),
-			                   "NODE POOL EXHAUSTED -- tree was truncated");
-		}
-		if (s.memCapacityReached) {
-			ImGui::TextColored(ImVec4(1, 0.6f, 0.2f, 1),
-			                   "device memory budget reached -- ingest stopped");
-		}
-
+	if (ILodPipeline* pipeline = m_registry.active()) {
 		sectionHeader(("Pipeline: " + m_registry.activeId()).c_str());
-		pipeline->gui(m_profiler);
+		pipeline->guiControls();
 	} else {
+		sectionHeader("Pipeline");
 		ImGui::TextColored(ImVec4(1, 0.35f, 0.25f, 1), "no active pipeline");
 	}
 
