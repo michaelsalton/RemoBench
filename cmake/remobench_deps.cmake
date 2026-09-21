@@ -38,10 +38,15 @@ find_package(CUDAToolkit 12.4 REQUIRED)
 # GLU: libs/glew's glew.h includes <GL/glu.h> unconditionally, so libglu1-mesa-dev
 # is a hard requirement even though we never call a GLU function. It is a separate
 # package from libgl1-mesa-dev and easy to miss, so fail loudly and early.
+#
+# Linux only: the header ships with the Windows SDK, so there is nothing to check
+# for and nothing to install. The path is hardcoded rather than found, so guarding
+# on the platform is the fix -- FindOpenGL's OPENGL_glu_LIBRARY says whether the
+# *library* is linkable, which is not what glew.h needs.
 # ---------------------------------------------------------------------------
 find_package(OpenGL REQUIRED)
 
-if (NOT EXISTS "/usr/include/GL/glu.h")
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EXISTS "/usr/include/GL/glu.h")
 	message(FATAL_ERROR
 		"GL/glu.h not found, but libs/glew/glew.h includes it unconditionally.\n"
 		"        Run: sudo apt install libglu1-mesa-dev")
@@ -115,7 +120,11 @@ target_include_directories(remobench_thirdparty SYSTEM PUBLIC
 target_compile_definitions(remobench_thirdparty PUBLIC GLEW_STATIC)
 
 # Third-party code is not ours to keep warning-clean.
-target_compile_options(remobench_thirdparty PRIVATE -w)
+if (MSVC)
+	target_compile_options(remobench_thirdparty PRIVATE /w)
+else ()
+	target_compile_options(remobench_thirdparty PRIVATE -w)
+endif ()
 
 target_link_libraries(remobench_thirdparty PUBLIC glfw OpenGL::GL)
 
@@ -147,3 +156,48 @@ target_include_directories(remobench_deps SYSTEM INTERFACE
 list(GET CUDAToolkit_INCLUDE_DIRS 0 REMOBENCH_CUDA_INCLUDE_ROOT)
 target_compile_definitions(remobench_deps INTERFACE
 	REMOBENCH_CUDA_INCLUDE_DIR="${REMOBENCH_CUDA_INCLUDE_ROOT}")
+
+# ---------------------------------------------------------------------------
+# Windows: put NVRTC and nvJitLink next to the binary.
+#
+# There is no rpath on Windows, so these are resolved from the directory of the
+# executable or from PATH. PATH commonly holds an OLDER toolkit's bin -- a machine
+# with 11.6 and 12.4 installed side by side will have exactly one of them first --
+# and the failure mode is a bare 0xC0000135 at process start with no message about
+# which DLL or which version. Copying the ones we linked against removes both the
+# ordering question and the need to prepend anything to PATH before running.
+#
+# This is a copy of a redistributable runtime, not of anything under kernels/; the
+# banner in remobench_kernels.cmake is about kernel SOURCE, which must stay a
+# symlink so hot reload reads the file you are editing.
+#
+# Deliberately not an install() rule: nothing here is installed, the build tree is
+# where the binary is run from.
+# ---------------------------------------------------------------------------
+function(remobench_copy_cuda_runtime target)
+	if (NOT WIN32)
+		return ()
+	endif ()
+
+	# Globbed rather than named: the soname carries the toolkit version
+	# (nvrtc64_120_0.dll, nvrtc-builtins64_124.dll), so hardcoding it would silently
+	# copy nothing after a toolkit bump. nvrtc-builtins is not linked against, but
+	# nvrtc loads it at runtime and fails the first compile without it.
+	file(GLOB _cuda_runtime_dlls
+		"${CUDAToolkit_BIN_DIR}/nvrtc64_*.dll"
+		"${CUDAToolkit_BIN_DIR}/nvrtc-builtins64_*.dll"
+		"${CUDAToolkit_BIN_DIR}/nvJitLink_*.dll")
+
+	if (NOT _cuda_runtime_dlls)
+		message(WARNING
+			"remobench: no NVRTC/nvJitLink DLLs found in ${CUDAToolkit_BIN_DIR}.\n"
+			"        The binary will only start if they are reachable via PATH.")
+		return ()
+	endif ()
+
+	add_custom_command(TARGET ${target} POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+			${_cuda_runtime_dlls} "$<TARGET_FILE_DIR:${target}>"
+		COMMENT "copying CUDA runtime DLLs next to ${target}"
+		VERBATIM)
+endfunction()

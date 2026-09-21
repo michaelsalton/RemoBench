@@ -1,0 +1,5 @@
+- Hard code the octree values and skip one of the tree traversal steps (find out which one(s) can be skipped)
+- Hard code arbitrary values for density of points (eg: density < 1000 / chunk = 1 octree level else = 3 octree levels) - have a few levels (probably 6) depending on point density
+- This should make the Octree generation faster theoretically
+- To verify this I need to compare against the benchmarks reported in SimLOD, so i need to acheive the same performance they claim in the paper with SimLOD
+- reference @SimLOD.pdf to find the metrics

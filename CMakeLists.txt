@@ -68,9 +68,20 @@ target_link_libraries(remobench PRIVATE remobench_deps)
 
 # Our own code we do keep warning-clean. Third-party sources are isolated in the
 # remobench_thirdparty target, which is built with -w.
-target_compile_options(remobench PRIVATE -Wall -Wextra)
+#
+# /W4 is MSVC's nearest equivalent to -Wall -Wextra; /Wall is not, it warns on every
+# system header. Note cl.exe only warns (D9002) on an unknown -W flag rather than
+# failing, so getting this wrong is silently a no-op.
+if (MSVC)
+	target_compile_options(remobench PRIVATE /W4)
+else ()
+	target_compile_options(remobench PRIVATE -Wall -Wextra)
+endif ()
 
 remobench_link_kernels(remobench)
+
+# No-op off Windows; see the banner in remobench_deps.cmake.
+remobench_copy_cuda_runtime(remobench)
 
 # ---------------------------------------------------------------------------
 # Tests (Catch2 v3, optional -- absent on a fresh machine)

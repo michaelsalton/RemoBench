@@ -15,15 +15,78 @@ ARGS ?=
 
 CMAKE_FLAGS ?=
 
+# Empty on a single-config generator (Unix Makefiles, Ninja), which bakes the build
+# type in at configure time. See the Windows block below.
+CMAKE_CONFIG       :=
+CMAKE_CONFIG_DEBUG :=
+CTEST_CONFIG       :=
+
+# ---------------------------------------------------------------------------
+# Windows
+#
+# Three things differ, and only three:
+#
+#   1. The recipes in this file are POSIX -- `rm -rf`, `test -f`, `ls`,
+#      ./bench/check_vendored.sh -- so make is pointed at Git's sh.exe rather than
+#      cmd.exe. The 8.3 short path is not cosmetic: GNU Make cannot quote SHELL, so
+#      the space in "Program Files" would split it into two words.
+#
+#      Setting SHELL alone is NOT enough, and this is the trap: make's Windows port
+#      skips the shell entirely for any command with no metacharacters and hands it
+#      straight to CreateProcess, so `rm -rf build` fails with a bare "The system
+#      cannot find the file specified" no matter what SHELL says. Git's usr/bin has
+#      to be on PATH so those utilities actually resolve. It also supplies the env
+#      and bash that make prepends when a recipe invokes a .sh directly.
+#
+#   2. Visual Studio is a MULTI-config generator. It ignores CMAKE_BUILD_TYPE at
+#      configure time, takes --config at build time instead, and writes the binary
+#      into a per-config subdirectory. Hence CMAKE_CONFIG and the different TARGET.
+#      Getting this wrong builds Debug and then silently runs nothing.
+#
+#   3. find_package(CUDAToolkit 12.4 REQUIRED) can otherwise resolve to whichever
+#      nvcc is first on PATH, which is commonly an older toolkit sitting alongside.
+#      CUDA_PATH is set by the installer and is already in make's environment, so
+#      forward it explicitly.
+#
+# Nothing here is reached on Linux: OS is only defined to Windows_NT on Windows.
+# ---------------------------------------------------------------------------
+ifeq ($(OS),Windows_NT)
+  # Override if Git for Windows is somewhere else. PROGRA~1 is the 8.3 form of
+  # "Program Files"; `dir /x C:\` prints the equivalent for any other location.
+  GIT_USR_BIN ?= C:/PROGRA~1/Git/usr/bin
+
+  ifeq ($(wildcard $(GIT_USR_BIN)/sh.exe),)
+    $(error no sh.exe at $(GIT_USR_BIN) -- install Git for Windows, or run \
+      `make GIT_USR_BIN=<path>/usr/bin`)
+  endif
+
+  export PATH := $(subst /,\,$(GIT_USR_BIN));$(PATH)
+  SHELL       := $(GIT_USR_BIN)/sh.exe
+  .SHELLFLAGS := -c
+
+  TARGET             := $(BUILD_DIR)/Release/remobench.exe
+  CMAKE_CONFIG       := --config Release
+  CMAKE_CONFIG_DEBUG := --config Debug
+  # ctest needs it too, and defaults to Debug -- i.e. to running no tests at all,
+  # silently, once tests/unit/ has something in it.
+  CTEST_CONFIG       := -C Release
+
+  # override, because a plain += does not append to a variable set on the command
+  # line -- `make CMAKE_FLAGS=...` would otherwise drop the toolkit root.
+  ifdef CUDA_PATH
+    override CMAKE_FLAGS += -DCUDAToolkit_ROOT="$(subst \,/,$(CUDA_PATH))"
+  endif
+endif
+
 .PHONY: all debug run test check check-vendored check-kernels clean cmake-configure
 
 all: cmake-configure
-	cmake --build $(BUILD_DIR) --parallel
+	cmake --build $(BUILD_DIR) --parallel $(CMAKE_CONFIG)
 
 # Separate build dir so a debug configure does not thrash the release cache.
 debug:
 	cmake -S . -B $(BUILD_DIR)-debug -DCMAKE_BUILD_TYPE=Debug $(CMAKE_FLAGS)
-	cmake --build $(BUILD_DIR)-debug --parallel
+	cmake --build $(BUILD_DIR)-debug --parallel $(CMAKE_CONFIG_DEBUG)
 
 cmake-configure: $(BUILD_DIR)/CMakeCache.txt
 
@@ -34,7 +97,7 @@ run: all
 	./$(TARGET) $(ARGS)
 
 test: all
-	ctest --test-dir $(BUILD_DIR) --output-on-failure
+	ctest --test-dir $(BUILD_DIR) --output-on-failure $(CTEST_CONFIG)
 
 # What passes for a test suite until tests/unit/ has something in it.
 #

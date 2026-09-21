@@ -19,10 +19,15 @@
 function(remobench_link_kernels target)
 	set(_link "$<TARGET_FILE_DIR:${target}>/kernels")
 
+	# Driven through a -P script rather than `cmake -E create_symlink` so that a
+	# refusal is not fatal: Windows denies symlink creation without Developer Mode
+	# or elevation, and the link is only a convenience -- the binary resolves its
+	# kernels through REMOBENCH_KERNEL_DIR below. Still a symlink, never a copy.
 	add_custom_command(TARGET ${target} POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E rm -f "${_link}"
-		COMMAND ${CMAKE_COMMAND} -E create_symlink
-			"${CMAKE_SOURCE_DIR}/kernels" "${_link}"
+		COMMAND ${CMAKE_COMMAND}
+			-DREMOBENCH_KERNELS_SRC=${CMAKE_SOURCE_DIR}/kernels
+			-DREMOBENCH_KERNELS_LINK=${_link}
+			-P "${CMAKE_SOURCE_DIR}/cmake/remobench_symlink_kernels.cmake"
 		COMMENT "symlinking kernels/ next to ${target}"
 		VERBATIM)
 
