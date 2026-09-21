@@ -19,6 +19,8 @@
 
 #include "../CudaPrint/CudaPrint.cuh"
 
+#include "shared/remo_prelude.cuh"
+
 namespace cg = cooperative_groups;
 
 constexpr uint64_t VOXEL_BACKLOG_CAPACITY = 10'000'000;
@@ -34,6 +36,10 @@ Node** backlog_targets     = nullptr;
 uint32_t* numBacklogVoxels = nullptr;
 Chunk** chunkQueue         = nullptr;
 CudaPrint* cudaprint       = nullptr;
+
+// Phase-timing sink. Always passed by the host, in both build variants, so the
+// kernel signature never depends on REMO_PROFILE. Only the marks compile out.
+remo::DeviceTimeline* timeline = nullptr;
 
 uint32_t SPECTRAL[8] = {
 	0x4f3ed5,
@@ -335,6 +341,15 @@ void expand(
 
 		grid.sync();
 
+		// Iteration 0's counting pass is irreducible; 1..N are what a predicted
+		// depth would delete. They are separated here, not in the mark stream,
+		// because a mark pair per iteration would overflow REMO_MAX_MARKS.
+		// nanotime() is asm volatile, so the read itself is guarded too — the
+		// default build must not pay for a clock read it never stores.
+#ifdef REMO_PROFILE
+		const uint64_t t_iter = nanotime();
+#endif
+
 		bool isFinished = doCounting(root, points, numPoints,
 			octreeMin, octreeMax, octreeSize,
 			nodes,
@@ -344,6 +359,18 @@ void expand(
 
 		grid.sync();
 
+		// Counting only. Splitting is deliberately outside this window, so
+		// expand_total - sum(expandIterNs) isolates doSplitting's cost.
+#ifdef REMO_PROFILE
+		if(timeline != nullptr && grid.thread_rank() == 0){
+			timeline->expandIters += 1;
+			timeline->nodesSplit += isFinished ? 0u : *numSpillingNodes;
+			if(i < int(remo::REMO_MAX_EXPAND_ITERS)){
+				timeline->expandIterNs[i] += nanotime() - t_iter;
+			}
+		}
+#endif
+
 		if(isFinished) break;
 
 		doSplitting(nodes, spillingNodes, numSpillingNodes);
@@ -352,6 +379,15 @@ void expand(
 	}
 
 	grid.sync();
+
+	// Once per batch, not per iteration: numSpilledPoints is reset in addBatch
+	// and only ever grows within a batch, so adding it each iteration would
+	// count the same points again at every pass.
+#ifdef REMO_PROFILE
+	if(timeline != nullptr && grid.thread_rank() == 0){
+		timeline->spilledPoints += *numSpilledPoints;
+	}
+#endif
 }
 
 void voxelSampling(
@@ -630,6 +666,7 @@ void addBatch(
 	auto block = cg::this_thread_block();
 
 	auto t_00 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseBatchBegin);
 
 	if(grid.thread_rank() == 0){
 		*numSpilledPoints = 0;
@@ -641,6 +678,7 @@ void addBatch(
 	Node* root = &nodes[0];
 
 	auto t_10 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseExpand);
 
 	expand(root, points, batchSize,
 		octreeMin, octreeMax, octreeSize,
@@ -653,6 +691,7 @@ void addBatch(
 	grid.sync();
 
 	auto t_20 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseVoxelSampling);
 
 	voxelSampling(root, points, batchSize,
 		octreeMin, octreeMax, octreeSize,
@@ -662,18 +701,21 @@ void addBatch(
 	grid.sync();
 
 	auto t_30 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseAllocPointChunks);
 
 	allocatePointChunks(root, points, batchSize, nodes);
 
 	grid.sync();
 
 	auto t_40 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseAllocVoxelChunks);
 
 	allocateVoxelChunks(nodes);
 
 	grid.sync();
 
 	auto t_50 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseInsertPoints);
 
 	insertPoints(root, points, batchSize,
 		octreeMin, octreeMax, octreeSize,
@@ -683,14 +725,22 @@ void addBatch(
 	grid.sync();
 
 	auto t_60 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseInsertVoxels);
 
 	insertVoxels(batchIndex);
 
 	grid.sync();
 
 	auto t_70 = nanotime();
+	REMO_MARK(timeline, remo::kPhaseBatchEnd);
 
 	grid.sync();
+
+	REMO_PROFILE_ONLY(
+		if(timeline != nullptr && grid.thread_rank() == 0){
+			timeline->batches += 1;
+		}
+	);
 
 	if(grid.thread_rank() == 0){
 		float t_00_70 = double(t_70 - t_00) / 1'000'000.0;
@@ -726,13 +776,33 @@ void kernel_construct(
 	uint64_t* frameStartTimestamp,
 	CudaPrint* _cudaprint,
 	uint32_t* _numBatchesUploaded_volatile,
-	uint32_t* batchSizes
+	uint32_t* batchSizes,
+	remo::DeviceTimeline* _timeline
 ){
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 	auto tStart = nanotime();
 
 	cudaprint = _cudaprint;
+	timeline = _timeline;
+
+	// Per launch, not per cloud: the host reads the timeline after every
+	// construct, so each launch starts from zero. remolod_reset.cu runs only on
+	// cloud reset and cannot do this.
+#ifdef REMO_PROFILE
+	if(timeline != nullptr && grid.thread_rank() == 0){
+		timeline->numMarks      = 0;
+		timeline->overflow      = 0;
+		timeline->batches       = 0;
+		timeline->expandIters   = 0;
+		timeline->nodesSplit    = 0;
+		timeline->pad1          = 0;
+		timeline->spilledPoints = 0;
+		for(uint32_t i = 0; i < remo::REMO_MAX_EXPAND_ITERS; i++){
+			timeline->expandIterNs[i] = 0;
+		}
+	}
+#endif
 
 	if(grid.thread_rank() == 0){
 		*frameStartTimestamp = tStart;

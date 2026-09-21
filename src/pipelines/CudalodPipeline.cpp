@@ -47,7 +47,11 @@ PipelineInfo CudalodPipeline::info() const {
 	info.displayName = "CudaLOD (batch)";
 	info.progressive = false;
 	info.needsWholeCloudResident = true;
-	info.bytesPerPointEstimate = kBytesPerPointSlab + 16.0;
+	// A batch builder has no graceful truncation: it voxelizes the whole cloud in two
+	// launches or it overruns the slab. So the appetite IS the floor here, unlike the
+	// progressive pipelines, where the persistent store clamps and ingest stops cleanly.
+	info.bytesPerPointEstimate = kBytesPerPointSlab;
+	info.minBytesPerPointEstimate = kBytesPerPointSlab;
 	return info;
 }
 

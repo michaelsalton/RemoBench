@@ -145,6 +145,13 @@ struct ScopeStats {
 
 **Touches:** `include/remo/HostDeviceCommon.h`, `kernels/shared/remo_prelude.cuh`, `kernels/simlod/progressive_octree_voxels.cu`, `kernels/cudalod/kernel.cu`, the two pipelines' readback functions.
 
+> **Partly landed — for RemoLOD only. See §8 and `plans/05_HardCodedTest.md`.**
+> This section omits `kernels/remolod/remolod_octree.cu`, which carries the same
+> `t_00`..`t_70` marks (RemoLOD being the fork) and is the only octree kernel that may
+> be edited at all. That is where the layer was actually built, which is why it needed
+> no vendored-code exemption. The provenance discussion below still applies to
+> extending it to `simlod` and `cudalod`, which has not been done.
+
 This is the layer that gets `expand` / `createVoxels` / `insertPoints` out of the megakernel, and it is the only layer that touches vendored device code.
 
 **The provenance constraint, and how it is respected.** Both `include/remo/ILodPipeline.h:100-104` and `kernels/simlod/HostDeviceInterface.h:5-7` state the rule: rewriting the structs the reference kernels read is how a port silently stops reproducing its published numbers. The CMake preamble states a related rule about never including a file that a patch modifies.
@@ -445,3 +452,42 @@ Modified: `include/remo/ILodPipeline.h`, all three pipelines, `src/shell/App.{h,
 
 `--dump-frame` now prints a per-scope table (n, last, median, p95, min, max, total) and
 names the regime, which is the readout Stage 2 formalises into NDJSON.
+
+## 8. Layer 3, as built for RemoLOD
+
+Built in service of `plans/05_HardCodedTest.md`, which needed `expand`'s share of the
+construct kernel before committing to a predicted-depth experiment. Scoped to
+`kernels/remolod/remolod_octree.cu`; `simlod` and `cudalod` are untouched, so the
+vendored tree is still byte-identical and the design's provenance guard was not needed
+in practice.
+
+**What matched §2.** `DeviceTimeline` next to `DeviceDiagnostics`; `REMO_MARK` in
+`kernels/shared/remo_prelude.cuh` guarded by `REMO_PROFILE`; the variant selected
+through `KernelProgramDesc::defines` — its **first host-side user**; readback alongside
+the existing `Stats` copy, after the `cuCtxSynchronize` that was already there; phases
+fed to the profiler under nested `remolod.construct.<phase>` names; and the phase-sum vs
+CUevent cross-check as the acceptance test.
+
+**Four things §2 did not anticipate.**
+
+1. **Marks alone were not enough.** `expand` is an iterative loop, and the question was
+   how much of it *re-counting* costs, not what the phase costs. That needed per-iteration
+   accumulators (`expandIterNs[]`) as well as marks — a mark pair per iteration would
+   overflow `REMO_MAX_MARKS` at 20 batches × 20 iterations.
+2. **The clock read needs guarding too, not just the store.** `nanotime()` is
+   `asm volatile`, so a read left outside `#ifdef REMO_PROFILE` survives optimisation and
+   the default build pays for a timestamp it never keeps.
+3. **`GpuProfiler` had no way to accept an externally-measured sample.** §2 said phases
+   would be "fed to the profiler as samples" without naming an entry point; there was
+   none. `GpuProfiler::addSample(name, ms)` was added.
+4. **Sub-phase scopes must stay out of `TimingScopes::build`.** `buildTotals()` sums
+   every name there, so registering them would double-count against `remolod.construct`
+   and corrupt the throughput readout.
+
+**The cross-check passed:** the phase sum is 97.7% of the `remolod.construct` CUevent
+total across five runs (94.8–99.3%). The residual is the kernel prologue and the closing
+stats reduction, which sit outside `addBatch` and carry no marks.
+
+**Still open:** extending Layer 3 to `simlod` and `cudalod` — which is where the
+provenance guard in §2 finally earns its keep — and the strategy-3 localisation test in
+§5, still blocked on CudaLOD's sampling strategy being GUI-only.

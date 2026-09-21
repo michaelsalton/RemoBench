@@ -42,6 +42,48 @@ inline uint32_t remoPackRGBA(uint32_t r, uint32_t g, uint32_t b, uint32_t a) {
 	return r | (g << 8) | (b << 16) | (a << 24);
 }
 
+// Intra-kernel phase timing. See plans/05_HardCodedTest.md.
+//
+// REMO_MARK expands to nothing unless REMO_PROFILE is defined, so a default build
+// does none of the timing work -- not the stores and not the clock reads, which
+// are asm volatile and would otherwise survive. The kernel signature is the one
+// thing that does NOT vary: the sink pointer is passed either way, so there is a
+// single host launch path. The profiling variant is requested
+// through KernelProgramDesc::defines, which is part of the compile cache key,
+// so both variants cache side by side and hot-reload independently.
+//
+// Place a mark ONLY immediately after a grid.sync(). One thread's clock read is
+// a grid-wide phase boundary only when every other thread has reached the same
+// point. REMO_PROFILE_ONLY carries the same requirement.
+#ifdef REMO_PROFILE
+
+#define REMO_MARK(tl, phaseId)                                              \
+	do {                                                                    \
+		if ((tl) != nullptr && cg::this_grid().thread_rank() == 0) {        \
+			const uint32_t _i = (tl)->numMarks;                             \
+			if (_i < remo::REMO_MAX_MARKS) {                                \
+				(tl)->marks[_i].phase = (phaseId);                          \
+				(tl)->marks[_i].pad = 0;                                    \
+				(tl)->marks[_i].ns = remo::remoNanotime();                  \
+				(tl)->numMarks = _i + 1;                                    \
+			} else {                                                        \
+				(tl)->overflow = 1;                                         \
+			}                                                               \
+		}                                                                   \
+	} while (0)
+
+#define REMO_PROFILE_ONLY(...)                                              \
+	do {                                                                    \
+		__VA_ARGS__                                                         \
+	} while (0)
+
+#else
+
+#define REMO_MARK(tl, phaseId) ((void)0)
+#define REMO_PROFILE_ONLY(...) ((void)0)
+
+#endif
+
 inline uint32_t remoHashColor(uint64_t key) {
 	uint64_t h = (key + 0x9E3779B97F4A7C15ull) * 0x9E3779B97F4A7C15ull;
 	h ^= h >> 29;

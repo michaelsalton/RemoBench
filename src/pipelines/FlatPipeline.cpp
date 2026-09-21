@@ -26,7 +26,11 @@ PipelineInfo FlatPipeline::info() const {
 	info.displayName = "Flat (no LOD)";
 	info.progressive = false;
 	info.needsWholeCloudResident = true;
-	info.bytesPerPointEstimate = 16.0;
+	// Flat allocates nothing per point: the resident cloud is its whole cost, and the
+	// gate accounts for that through needsWholeCloudResident. The pixel scratch is
+	// resolution-dependent, not cloud-dependent, so it is not part of the floor either.
+	info.bytesPerPointEstimate = 0.0;
+	info.minBytesPerPointEstimate = 0.0;
 	return info;
 }
 

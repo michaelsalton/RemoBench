@@ -18,7 +18,11 @@ constexpr uint32_t GRID_NUM_CELLS    = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 constexpr int MAX_DEPTH              = 20;
 constexpr float MAX_DEPTH_GRIDSIZE   = 268'435'456.0f;
 
-constexpr uint64_t BATCH_STREAM_SIZE = 8192;
+// Back to upstream's 50. See kernels/remolod/remolod_layout.h for why this fork edit
+// runs backwards: 8192 was an addressing ceiling for a non-wrapping resident feed, and
+// PointSource now wraps, so the ceiling is not needed and 8192 slots would be a 131 GB
+// ring. The fork is now apart from SimLOD on MAX_NODES_CAPACITY alone.
+constexpr uint64_t BATCH_STREAM_SIZE = 50;
 
 struct Point{
 	float x;

@@ -28,6 +28,11 @@ constexpr uint32_t kMaxNodes = remolod::kMaxNodes;
 constexpr double kBytesPerPointPersistent = 48.0;
 constexpr uint64_t kMinPersistentBytes = 512ull << 20;
 
+// The measured floor; see the same constant in SimlodPipeline.cpp. RemoLOD's tree is
+// SimLOD's tree today, so the coefficient is the same one, and it stays the same until
+// Refinement starts changing what gets stored.
+constexpr double kMinBytesPerPointPersistent = 26.0;
+
 constexpr uint64_t kBytesPerPixelScratch = 64;
 constexpr uint64_t kMinScratchBytes = 64ull << 20;
 
@@ -41,8 +46,18 @@ PipelineInfo RemolodPipeline::info() const {
 	info.id = "remolod";
 	info.displayName = "RemoLOD (detail-aware)";
 	info.progressive = true;
-	info.needsWholeCloudResident = true;
-	info.bytesPerPointEstimate = kBytesPerPointPersistent + 16.0;
+	// Streams, like the fork it came from. RemoLOD raised BATCH_STREAM_SIZE to 8192 only
+	// to make a non-wrapping resident feed addressable past 50M; with a real ring that
+	// value would be a 131 GB buffer, so the fork's constant goes back down to 50 and
+	// this divergence from SimLOD disappears.
+	info.needsWholeCloudResident = false;
+	info.ringSlots = remolod::kBatchStreamSize;
+	info.bytesPerPointEstimate = kBytesPerPointPersistent;
+	info.minBytesPerPointEstimate = kMinBytesPerPointPersistent;
+	info.minStoreBytes = kMinPersistentBytes;
+	info.fixedBytesEstimate =
+		kMomentaryBytes + static_cast<uint64_t>(kMaxNodes) *
+		                      (remolod::kNodeBytes + sizeof(NodeAccum));
 	return info;
 }
 
@@ -64,6 +79,11 @@ bool RemolodPipeline::initPrograms(std::string* err) {
 		KernelProgramDesc desc;
 		desc.modules = {spec.module};
 		desc.kernels = spec.kernels;
+		// Only the construct kernel carries phase marks. defines is part of the
+		// compile cache key, so both variants cache side by side.
+		if (m_phaseTimings && spec.target == &m_constructProgram) {
+			desc.defines = {"-DREMO_PROFILE"};
+		}
 		*spec.target = std::make_unique<CudaModularProgram>(std::move(desc));
 		if (!(*spec.target)->ok()) {
 			if (err) *err = (*spec.target)->lastError();
@@ -90,7 +110,12 @@ bool RemolodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 		return false;
 	}
 
-	const uint64_t inputBytes = meta.numPoints * 16ull;
+	// The input term no longer scales with the cloud: what PointSource takes out of the
+	// shared budget is the ring, and the ring is the same size for 36M points as for
+	// 350M. That is the whole of what streaming buys.
+	const uint64_t batches = (meta.numPoints + kSlotCapacity - 1) / kSlotCapacity;
+	const uint64_t slots = std::min<uint64_t>(remolod::kBatchStreamSize, batches);
+	const uint64_t inputBytes = slots * kSlotCapacity * sizeof(Point);
 	const uint64_t available =
 		budget.bytes > inputBytes ? budget.bytes - inputBytes : 0;
 
@@ -134,6 +159,7 @@ bool RemolodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 	    !alloc(&m_frameStart, 8, "the frame timestamp") ||
 	    !alloc(&m_cudaPrint, 1024, "the CudaPrint buffer") ||
 	    !alloc(&m_diagnostics, sizeof(DeviceDiagnostics), "diagnostics") ||
+	    !alloc(&m_timeline, sizeof(DeviceTimeline), "the phase timeline") ||
 	    !alloc(&m_resetBatchSizes, uint64_t(remolod::kBatchStreamSize) * 4,
 	           "reset's batchSizes scratch") ||
 	    !alloc(&m_resetNumUploaded, 4, "reset's numBatchesUploaded scratch")) {
@@ -153,8 +179,8 @@ bool RemolodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 void RemolodPipeline::release() {
 	for (CUdeviceptr* p : {&m_momentary, &m_persistent, &m_nodes, &m_nodeAccums,
 	                       &m_accumGlobals, &m_statsBuffer, &m_frameStart, &m_cudaPrint,
-	                       &m_scratch, &m_diagnostics, &m_resetBatchSizes,
-	                       &m_resetNumUploaded}) {
+	                       &m_scratch, &m_diagnostics, &m_timeline,
+	                       &m_resetBatchSizes, &m_resetNumUploaded}) {
 		if (*p) {
 			REMO_CU(cuMemFree(*p));
 			*p = 0;
@@ -258,6 +284,30 @@ bool RemolodPipeline::build(PointSource& source, const FrameContext& frame) {
 	if (view.slots == 0 || view.batchSizes == 0 || view.numBatchesUploaded == 0) {
 		return true;
 	}
+
+	// The one thing a consumer can check about the ring it was handed.
+	//
+	// kernel_construct reads batch B from slot B % BATCH_STREAM_SIZE, always. The host
+	// writes batch B to slot B % numSlots. Those agree in exactly two cases: the ring is
+	// BATCH_STREAM_SIZE deep, or the whole cloud fits in it and neither side wraps at
+	// all. Anything else reads a slot holding some other batch -- with no fault, no
+	// allocation error, and a plausible node count out the far end. Note that a ring
+	// DEEPER than BATCH_STREAM_SIZE is just as wrong as a shallower one, which is why
+	// this tests the kernel's constant and not BatchView::wrapping.
+	const bool ringMatchesKernel =
+		view.numSlots == remolod::kBatchStreamSize ||
+		(view.numBatchesTotal <= remolod::kBatchStreamSize &&
+		 view.numSlots >= view.numBatchesTotal);
+	if (!ringMatchesKernel) {
+		if (!m_ringMismatchReported) {
+			m_ringMismatchReported = true;
+			fprintf(stderr,
+			        "remobench: RemoLOD was handed a %u-slot ring but kernel_construct "
+			        "wraps at %u; refusing to build from it.\n",
+			        view.numSlots, remolod::kBatchStreamSize);
+		}
+		return false;
+	}
 	m_batchesTotal = view.numBatchesTotal;
 
 	Uniforms uniforms;
@@ -296,9 +346,22 @@ bool RemolodPipeline::build(PointSource& source, const FrameContext& frame) {
 		if (m_accumGlobals) REMO_CU(cuMemsetD8(m_accumGlobals, 0, sizeof(AccumGlobals)));
 		m_accum = AccumGlobals{};
 
+		for (double& ms : m_phaseMs) ms = 0.0;
+		for (double& ms : m_expandIterMs) ms = 0.0;
+		m_phaseBatches = m_phaseExpandIters = 0;
+		m_phaseSpilledPoints = m_phaseNodesSplit = 0;
+		m_phaseOverflow = 0;
+
 		m_needsReset = false;
 		m_complete = false;
 		m_batchesConsumed = 0;
+
+		// The reset kernel put the device's batch counter back to zero, so the
+		// producer has to go back to batch 0 too. Without this a rebuild keeps filling
+		// slots ahead of a consumer that has restarted, and the tree comes out of the
+		// wrong points -- silently.
+		source.rewind();
+		return true;
 	}
 
 	if (m_complete) return false;
@@ -311,9 +374,11 @@ bool RemolodPipeline::build(PointSource& source, const FrameContext& frame) {
 
 	CUdeviceptr points = view.slots;
 	CUdeviceptr momentary = m_momentary;
+	CUdeviceptr timeline = m_timeline;
 
-	void* args[] = {&uniforms, &points,     &momentary, &persistent,  &nodes,
-	                &statsPtr, &frameStart, &cudaPrint, &numUploaded, &batchSizes};
+	void* args[] = {&uniforms,  &points,     &momentary,  &persistent, &nodes,
+	                &statsPtr,  &frameStart, &cudaPrint,  &numUploaded,
+	                &batchSizes, &timeline};
 
 	const int grid = m_cuda.gridForKernel(construct, m_blockSize, 1);
 
@@ -331,6 +396,13 @@ bool RemolodPipeline::build(PointSource& source, const FrameContext& frame) {
 	REMO_CU(sync);
 
 	readStats();
+	readTimeline(frame);
+
+	// The only consumption signal there is, handed straight back to the producer: it
+	// opens the window for the next pump(). stats->batchletIndex is incremented once
+	// per batch actually folded into the tree, so a launch cut short by the device time
+	// budget narrows the window rather than widening it.
+	source.setBatchesConsumed(m_batchesConsumed);
 
 	runAccumulator(frame);
 
@@ -355,9 +427,12 @@ void RemolodPipeline::readStats() {
 	m_stats.numNodes = s.numNodes;
 	m_stats.numInner = s.numInner;
 	m_stats.numLeaves = s.numLeaves;
-	m_stats.numVisibleNodes = s.numVisibleNodes;
-	m_stats.numVisiblePoints = s.numVisiblePoints;
-	m_stats.numVisibleVoxels = s.numVisibleVoxels;
+	// Deliberately NOT copying s.numVisible* here. No kernel writes those Stats fields
+	// -- visibility is counted by the render kernel into DeviceDiagnostics -- so copying
+	// them zeroes what render() just measured. It went unnoticed while every build
+	// completed, because a completed build stops calling readStats and the last render's
+	// numbers survived. A build that stops on memCapacityReached never completes, and
+	// then the dump reports 0 visible nodes for a tree that is plainly on screen.
 
 	m_stats.bytesHighWater = s.allocatedBytes_persistent;
 	m_stats.bytesAllocated =
@@ -365,6 +440,54 @@ void RemolodPipeline::readStats() {
 	m_stats.memCapacityReached = s.memCapacityReached;
 
 	if (m_stats.numNodes >= kMaxNodes) m_stats.nodeCapacityReached = true;
+}
+
+// The scope name for each phase. These are the data format: renaming one breaks
+// comparison against runs already captured.
+static const char* const kPhaseScope[kNumConstructPhases] = {
+	"remolod.construct.batchBegin",      "remolod.construct.expand",
+	"remolod.construct.voxelSampling",   "remolod.construct.allocPointChunks",
+	"remolod.construct.allocVoxelChunks", "remolod.construct.insertPoints",
+	"remolod.construct.insertVoxels",    nullptr,  // kPhaseBatchEnd: no duration
+};
+
+void RemolodPipeline::readTimeline(const FrameContext& frame) {
+	if (!m_phaseTimings || !m_timeline) return;
+
+	DeviceTimeline t = {};
+	if (REMO_CU(cuMemcpyDtoH(&t, m_timeline, sizeof(DeviceTimeline))) != CUDA_SUCCESS) {
+		return;
+	}
+	if (t.overflow) m_phaseOverflow = 1;
+	if (t.numMarks < 2) return;
+
+	// A mark records the phase that BEGINS at it, so consecutive marks bound one
+	// phase. Summed over the batches in this launch, then handed to the profiler
+	// as one sample per phase per launch — the same granularity as the
+	// remolod.construct CUevent it must be cross-checked against.
+	double launchMs[kNumConstructPhases] = {};
+	const uint32_t n = t.numMarks < REMO_MAX_MARKS ? t.numMarks : REMO_MAX_MARKS;
+	for (uint32_t i = 0; i + 1 < n; ++i) {
+		const uint32_t phase = t.marks[i].phase;
+		if (phase >= kNumConstructPhases || phase == kPhaseBatchEnd) continue;
+		if (t.marks[i + 1].ns < t.marks[i].ns) continue;  // clock went backwards
+		launchMs[phase] += double(t.marks[i + 1].ns - t.marks[i].ns) / 1e6;
+	}
+
+	for (uint32_t p = 0; p < kNumConstructPhases; ++p) {
+		if (!kPhaseScope[p]) continue;
+		m_phaseMs[p] += launchMs[p];
+		if (frame.profiler) frame.profiler->addSample(kPhaseScope[p], launchMs[p]);
+	}
+
+	for (uint32_t i = 0; i < REMO_MAX_EXPAND_ITERS; ++i) {
+		m_expandIterMs[i] += double(t.expandIterNs[i]) / 1e6;
+	}
+
+	m_phaseBatches += t.batches;
+	m_phaseExpandIters += t.expandIters;
+	m_phaseSpilledPoints += t.spilledPoints;
+	m_phaseNodesSplit += t.nodesSplit;
 }
 
 void RemolodPipeline::ensureScratch(int width, int height) {
@@ -430,6 +553,54 @@ void RemolodPipeline::render(const FrameContext& frame) {
 std::vector<std::string> RemolodPipeline::diagnostics() const {
 	std::vector<std::string> out;
 	char buf[128];
+
+	// Phase timings first: the measurement protocol runs with the accumulator
+	// off, and the accumulator block below returns early in that case.
+	if (m_phaseTimings) {
+		double total = 0.0;
+		for (uint32_t p = 0; p < kNumConstructPhases; ++p) total += m_phaseMs[p];
+
+		for (uint32_t p = 0; p < kNumConstructPhases; ++p) {
+			if (!kPhaseScope[p]) continue;
+			snprintf(buf, sizeof(buf), "%8.2f ms  %5.1f%%", m_phaseMs[p],
+			         total > 0.0 ? 100.0 * m_phaseMs[p] / total : 0.0);
+			// Strip the shared "remolod.construct." prefix for the label.
+			out.push_back(std::string("phase ") + (kPhaseScope[p] + 18) + "\t" + buf);
+		}
+
+		snprintf(buf, sizeof(buf), "%.2f ms", total);
+		out.push_back(std::string("phase sum\t") + buf);
+
+		// Iteration 0's counting is irreducible; 1..N are what a predicted depth
+		// would delete. Splitting is outside this window, so
+		// expand - sum(iters) isolates doSplitting.
+		double iter0 = m_expandIterMs[0];
+		double itersRest = 0.0;
+		for (uint32_t i = 1; i < REMO_MAX_EXPAND_ITERS; ++i) itersRest += m_expandIterMs[i];
+
+		snprintf(buf, sizeof(buf), "%.2f ms", iter0);
+		out.push_back(std::string("expand iter 0\t") + buf);
+		snprintf(buf, sizeof(buf), "%.2f ms  %.1f%% of construct", itersRest,
+		         total > 0.0 ? 100.0 * itersRest / total : 0.0);
+		out.push_back(std::string("expand iters 1+\t") + buf);
+		snprintf(buf, sizeof(buf), "%.2f ms",
+		         m_phaseMs[kPhaseExpand] - iter0 - itersRest);
+		out.push_back(std::string("expand splitting\t") + buf);
+
+		const double batches = m_phaseBatches > 0 ? double(m_phaseBatches) : 1.0;
+		snprintf(buf, sizeof(buf), "%llu", (unsigned long long)m_phaseBatches);
+		out.push_back(std::string("phase batches\t") + buf);
+		snprintf(buf, sizeof(buf), "%.2f", double(m_phaseExpandIters) / batches);
+		out.push_back(std::string("expand iters/batch\t") + buf);
+		snprintf(buf, sizeof(buf), "%.0f", double(m_phaseSpilledPoints) / batches);
+		out.push_back(std::string("spilled pts/batch\t") + buf);
+		snprintf(buf, sizeof(buf), "%.1f", double(m_phaseNodesSplit) / batches);
+		out.push_back(std::string("nodes split/batch\t") + buf);
+
+		if (m_phaseOverflow) {
+			out.push_back("phase marks\tOVERFLOW (raise REMO_MAX_MARKS)");
+		}
+	}
 
 	if (!m_accumEnabled) {
 		out.push_back("accumulator\toff (--remolod-no-accum)");
@@ -522,6 +693,41 @@ void RemolodPipeline::guiStats(const GpuProfiler& profiler) {
 		row("accumulators", "%.1f MB", double(m_nodeAccumsBytes) / 1e6);
 		row("high water", "%.2f GB", double(m_stats.bytesHighWater) / 1e9);
 		ImGui::EndTable();
+	}
+
+	// Phase breakdown. Deliberately NOT in TimingScopes::build: buildTotals()
+	// sums every name there, and these are sub-phases of remolod.construct.
+	if (m_phaseTimings) {
+		ImGui::Separator();
+		ImGui::TextUnformatted("construct phases (device marks)");
+		if (ImGui::BeginTable("remolod_phases", 2, ImGuiTableFlags_SizingStretchProp)) {
+			auto prow = [](const char* label, const char* fmt, double v) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(label);
+				ImGui::TableNextColumn();
+				ImGui::Text(fmt, v);
+			};
+
+			timingRow(profiler, "expand (ms)", "remolod.construct.expand");
+			timingRow(profiler, "voxelSampling (ms)", "remolod.construct.voxelSampling");
+			timingRow(profiler, "allocPointChunks (ms)",
+			          "remolod.construct.allocPointChunks");
+			timingRow(profiler, "allocVoxelChunks (ms)",
+			          "remolod.construct.allocVoxelChunks");
+			timingRow(profiler, "insertPoints (ms)", "remolod.construct.insertPoints");
+			timingRow(profiler, "insertVoxels (ms)", "remolod.construct.insertVoxels");
+
+			const double batches = m_phaseBatches > 0 ? double(m_phaseBatches) : 1.0;
+			prow("expand iters/batch", "%.2f", double(m_phaseExpandIters) / batches);
+			prow("spilled pts/batch", "%.0f", double(m_phaseSpilledPoints) / batches);
+			prow("nodes split/batch", "%.1f", double(m_phaseNodesSplit) / batches);
+			ImGui::EndTable();
+		}
+		if (m_phaseOverflow) {
+			ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
+			                   "mark overflow - raise REMO_MAX_MARKS");
+		}
 	}
 
 	ImGui::Separator();

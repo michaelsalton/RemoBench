@@ -28,6 +28,12 @@ constexpr uint32_t kMaxNodes = simlod::kMaxNodes;
 constexpr double kBytesPerPointPersistent = 48.0;
 constexpr uint64_t kMinPersistentBytes = 512ull << 20;
 
+// The measured floor for the persistent store, against which kBytesPerPointPersistent is
+// an appetite. SimLOD's Table 5 reports 9.1 GB for the 350M Morro Bay cloud -- 26 B/pt
+// including unused chunk capacity -- and RemoBench's own 36M tree comes to 25.7 B/pt.
+// Only this number refuses a cloud; see PipelineInfo.
+constexpr double kMinBytesPerPointPersistent = 26.0;
+
 constexpr uint64_t kBytesPerPixelScratch = 64;
 constexpr uint64_t kMinScratchBytes = 64ull << 20;
 
@@ -41,8 +47,18 @@ PipelineInfo SimlodPipeline::info() const {
 	info.id = "simlod";
 	info.displayName = "SimLOD (progressive)";
 	info.progressive = true;
-	info.needsWholeCloudResident = true;
-	info.bytesPerPointEstimate = kBytesPerPointPersistent + 16.0;
+	// kernel_construct consumes nothing but BatchView, so it never needed the cloud
+	// resident -- upstream streams into it, and holding the whole cloud was RemoBench's
+	// own choice. The ring depth is not ours to pick: kernel_construct computes
+	// `batchIndex % BATCH_STREAM_SIZE` itself, so the device ring must have exactly
+	// that many slots or the addressing reads outside it.
+	info.needsWholeCloudResident = false;
+	info.ringSlots = simlod::kBatchStreamSize;
+	info.bytesPerPointEstimate = kBytesPerPointPersistent;
+	info.minBytesPerPointEstimate = kMinBytesPerPointPersistent;
+	info.minStoreBytes = kMinPersistentBytes;
+	info.fixedBytesEstimate =
+		kMomentaryBytes + static_cast<uint64_t>(kMaxNodes) * simlod::kNodeBytes;
 	return info;
 }
 
@@ -87,7 +103,13 @@ bool SimlodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget,
 		return false;
 	}
 
-	const uint64_t inputBytes = meta.numPoints * 16ull;
+	// The input term no longer scales with the cloud: what PointSource takes out of the
+	// shared budget is the ring, and the ring is the same size for 36M points as for
+	// 350M. That is the whole of what streaming buys.
+	const uint64_t batches =
+		(meta.numPoints + kSlotCapacity - 1) / kSlotCapacity;
+	const uint64_t slots = std::min<uint64_t>(simlod::kBatchStreamSize, batches);
+	const uint64_t inputBytes = slots * kSlotCapacity * sizeof(Point);
 	const uint64_t available =
 		budget.bytes > inputBytes ? budget.bytes - inputBytes : 0;
 
@@ -194,6 +216,30 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 	if (view.slots == 0 || view.batchSizes == 0 || view.numBatchesUploaded == 0) {
 		return true;
 	}
+
+	// The one thing a consumer can check about the ring it was handed.
+	//
+	// kernel_construct reads batch B from slot B % BATCH_STREAM_SIZE, always. The host
+	// writes batch B to slot B % numSlots. Those agree in exactly two cases: the ring is
+	// BATCH_STREAM_SIZE deep, or the whole cloud fits in it and neither side wraps at
+	// all. Anything else reads a slot holding some other batch -- with no fault, no
+	// allocation error, and a plausible node count out the far end. Note that a ring
+	// DEEPER than BATCH_STREAM_SIZE is just as wrong as a shallower one, which is why
+	// this tests the kernel's constant and not BatchView::wrapping.
+	const bool ringMatchesKernel =
+		view.numSlots == simlod::kBatchStreamSize ||
+		(view.numBatchesTotal <= simlod::kBatchStreamSize &&
+		 view.numSlots >= view.numBatchesTotal);
+	if (!ringMatchesKernel) {
+		if (!m_ringMismatchReported) {
+			m_ringMismatchReported = true;
+			fprintf(stderr,
+			        "remobench: SimLOD was handed a %u-slot ring but kernel_construct "
+			        "wraps at %u; refusing to build from it.\n",
+			        view.numSlots, simlod::kBatchStreamSize);
+		}
+		return false;
+	}
 	m_batchesTotal = view.numBatchesTotal;
 
 	Uniforms uniforms;
@@ -231,6 +277,13 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 		m_needsReset = false;
 		m_complete = false;
 		m_batchesConsumed = 0;
+
+		// The reset kernel put the device's batch counter back to zero, so the
+		// producer has to go back to batch 0 too. Without this a rebuild keeps filling
+		// slots ahead of a consumer that has restarted, and the tree comes out of the
+		// wrong points -- silently.
+		source.rewind();
+		return true;
 	}
 
 	if (m_complete) return false;
@@ -264,6 +317,12 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 
 	readStats();
 
+	// The only consumption signal there is, handed straight back to the producer: it
+	// opens the window for the next pump(). stats->batchletIndex is incremented once
+	// per batch actually folded into the tree, so a launch cut short by the device time
+	// budget narrows the window rather than widening it.
+	source.setBatchesConsumed(m_batchesConsumed);
+
 	if (m_batchesTotal > 0 && m_batchesConsumed >= m_batchesTotal) {
 		m_complete = true;
 		return false;
@@ -285,9 +344,12 @@ void SimlodPipeline::readStats() {
 	m_stats.numNodes = s.numNodes;
 	m_stats.numInner = s.numInner;
 	m_stats.numLeaves = s.numLeaves;
-	m_stats.numVisibleNodes = s.numVisibleNodes;
-	m_stats.numVisiblePoints = s.numVisiblePoints;
-	m_stats.numVisibleVoxels = s.numVisibleVoxels;
+	// Deliberately NOT copying s.numVisible* here. No kernel writes those Stats fields
+	// -- visibility is counted by the render kernel into DeviceDiagnostics -- so copying
+	// them zeroes what render() just measured. It went unnoticed while every build
+	// completed, because a completed build stops calling readStats and the last render's
+	// numbers survived. A build that stops on memCapacityReached never completes, and
+	// then the dump reports 0 visible nodes for a tree that is plainly on screen.
 
 	m_stats.bytesHighWater = s.allocatedBytes_persistent;
 	m_stats.bytesAllocated = m_persistentBytes + m_momentaryBytes + m_nodesBytes;

@@ -197,12 +197,13 @@ Not there yet:
   contemplates.
 - **No quality metric harness.** `--dump-frame` writes a PPM; there is no Chamfer,
   Hausdorff or PCQM comparison against `flat`.
-- **SimLOD is capped at 50M points.** `kernel_construct` addresses batch N at
-  `(N % BATCH_STREAM_SIZE)` with upstream's `BATCH_STREAM_SIZE == 50`, and RemoBench feeds it
-  a resident cloud with no wrapping, so past 50 batches it re-reads slot 0. The pipeline
-  refuses such clouds rather than building a wrong tree. RemoLOD raises the constant in its
-  own fork and takes them; lifting it for `simlod` means the real wrapping ring in
-  `PointSource`, which is the streaming-loader item below.
+- **Ingest is synchronous.** `PointSource` wraps now — `simlod` and `remolod` stream
+  through a 50-slot ring and neither has a point ceiling any more — but the refill is a
+  blocking `cuMemcpyHtoD` on the render thread, inside the serialisation every pipeline
+  already does after construct. That is enough to make a cloud larger than the card
+  correct; it is not the paper's loading/generation overlap, which needs a real copy
+  stream (there is still no second `CUstream` in the repo). See the streaming-loader item
+  below and `plans/06_ComparisonFixes.md` Stage 5.
 - **No benchmark harness.** Stage 1 of
   [plans/02_ProfilingTools.md](plans/02_ProfilingTools.md) landed the instrument; there
   is still no `--bench` writing an NDJSON time series over a deterministic camera orbit
@@ -216,9 +217,11 @@ Not there yet:
   budget identically. The native metrics are still selectable in the kernels
   (`REMO_LOD_SIMLOD_NATIVE`, `REMO_LOD_CUDALOD_NATIVE`) but nothing on the host passes
   them yet.
-- The streaming loader. `simlod` currently builds progressively from an
-  already-resident cloud, which measures construction but not the paper's
-  loading/generation overlap.
+- The overlapped streaming loader. The ring exists and wraps, so construction is
+  genuinely progressive over a cloud that never has to fit on the device — but the refill
+  is synchronous, so loading and generation still do not overlap and the paper's
+  throughput claim is not reproduced. `.laz` is not on this path at all: laszip decodes
+  strictly sequentially with no seek, so a compressed cloud stays whole-cloud resident.
 
 ## Requirements
 

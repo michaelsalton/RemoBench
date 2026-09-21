@@ -199,15 +199,32 @@ bool readLasHeader(const std::string& path, LasHeaderInfo& info, std::string* er
 	return true;
 }
 
-bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
-                   const double translation[3], Point* out,
-                   double translatedBounds[6], std::string* err) {
+// One threaded block walk, three jobs: read the whole file, read a range of it, or read
+// nothing but the coordinates and merge their bounds.
+//
+// The bounds-only mode is what makes streaming possible at all. The box has to be final
+// before the first batch is uploaded -- boxSize sizes the octree root cube, and growing
+// it mid-stream invalidates every node already built, silently, because CudaLOD clamps
+// the cell index and SimLOD's float->uint32 conversion saturates. So the two fixups
+// loadLasCloud used to do after reading everything (re-read against a corrected
+// translation, grow the box past the header) happen against a coordinate pass instead.
+//
+// `out` is indexed from firstPoint, and may be null for the bounds-only pass.
+// `translatedBounds` may be null when the caller already knows the box.
+static bool walkLas(const std::string& path, const LasHeaderInfo& info,
+                    const double translation[3], uint64_t firstPoint,
+                    uint64_t numPoints, Point* out, double translatedBounds[6],
+                    std::string* err) {
 	if (info.compressed) {
 		if (err) *err = "compressed input must go through readLazPoints";
 		return false;
 	}
-	if (info.numPoints == 0) {
-		if (err) *err = "LAS header declares zero points: " + path;
+	if (numPoints == 0) {
+		if (err) *err = "LAS point range is empty: " + path;
+		return false;
+	}
+	if (firstPoint + numPoints > info.numPoints) {
+		if (err) *err = "LAS point range runs past the end of the file: " + path;
 		return false;
 	}
 
@@ -218,7 +235,7 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 	const double oy = info.offset[1] + translation[1];
 	const double oz = info.offset[2] + translation[2];
 
-	const uint64_t numBlocks = (info.numPoints + kBlockPoints - 1) / kBlockPoints;
+	const uint64_t numBlocks = (numPoints + kBlockPoints - 1) / kBlockPoints;
 	const unsigned hw = std::thread::hardware_concurrency();
 	unsigned numThreads = std::min<unsigned>(hw ? hw : 4u, kMaxLoaderThreads);
 	numThreads = static_cast<unsigned>(
@@ -237,11 +254,13 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 		failed.store(true, std::memory_order_relaxed);
 	};
 
+	const uint64_t lastPointOverall = firstPoint + numPoints;
+
 	const auto worker = [&](unsigned t) {
-		const uint64_t firstPoint = t * blocksPerThread * kBlockPoints;
-		if (firstPoint >= info.numPoints) return;
+		const uint64_t threadFirst = firstPoint + t * blocksPerThread * kBlockPoints;
+		if (threadFirst >= lastPointOverall) return;
 		const uint64_t lastPoint = std::min(
-			info.numPoints, firstPoint + blocksPerThread * kBlockPoints);
+			lastPointOverall, threadFirst + blocksPerThread * kBlockPoints);
 
 		std::ifstream in(path, std::ios::binary);
 		if (!in) {
@@ -252,7 +271,7 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 		std::vector<uint8_t> buf(static_cast<size_t>(kBlockPoints) * bpp);
 		Bounds bounds;
 
-		for (uint64_t p = firstPoint; p < lastPoint; p += kBlockPoints) {
+		for (uint64_t p = threadFirst; p < lastPoint; p += kBlockPoints) {
 			if (failed.load(std::memory_order_relaxed)) return;
 
 			const uint64_t n = std::min<uint64_t>(kBlockPoints, lastPoint - p);
@@ -277,15 +296,19 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 				point.y = static_cast<float>(static_cast<double>(xyz[1]) * sy + oy);
 				point.z = static_cast<float>(static_cast<double>(xyz[2]) * sz + oz);
 
-				if (rgbOffset != 0) {
-					uint16_t rgb[3];
-					std::memcpy(rgb, record + rgbOffset, 6);
-					point.color = packLasColor(rgb);
-				} else {
-					point.color = kLasNoColor;
+				if (out) {
+					if (rgbOffset != 0) {
+						uint16_t rgb[3];
+						std::memcpy(rgb, record + rgbOffset, 6);
+						point.color = packLasColor(rgb);
+					} else {
+						point.color = kLasNoColor;
+					}
+					out[p + i - firstPoint] = point;
 				}
-
-				out[p + i] = point;
+				// Accumulated from the same float32 coordinates the points carry, not
+				// from the f64 originals, so the bounds a pre-pass reports are exactly
+				// the bounds the points would have produced.
 				bounds.add(point.x, point.y, point.z);
 			}
 		}
@@ -303,13 +326,43 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 		return false;
 	}
 
-	Bounds total;
-	for (const Bounds& b : perThread) total.merge(b);
-	for (int i = 0; i < 3; ++i) {
-		translatedBounds[i] = total.lo[i];
-		translatedBounds[3 + i] = total.hi[i];
+	if (translatedBounds) {
+		Bounds total;
+		for (const Bounds& b : perThread) total.merge(b);
+		for (int i = 0; i < 3; ++i) {
+			translatedBounds[i] = total.lo[i];
+			translatedBounds[3 + i] = total.hi[i];
+		}
 	}
 	return true;
+}
+
+bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
+                   const double translation[3], Point* out,
+                   double translatedBounds[6], std::string* err) {
+	if (info.numPoints == 0) {
+		if (err) *err = "LAS header declares zero points: " + path;
+		return false;
+	}
+	return walkLas(path, info, translation, 0, info.numPoints, out, translatedBounds,
+	               err);
+}
+
+bool readLasRange(const std::string& path, const LasHeaderInfo& info,
+                  const double translation[3], uint64_t firstPoint, uint64_t numPoints,
+                  Point* out, std::string* err) {
+	return walkLas(path, info, translation, firstPoint, numPoints, out, nullptr, err);
+}
+
+bool readLasBounds(const std::string& path, const LasHeaderInfo& info,
+                   const double translation[3], double translatedBounds[6],
+                   std::string* err) {
+	if (info.numPoints == 0) {
+		if (err) *err = "LAS header declares zero points: " + path;
+		return false;
+	}
+	return walkLas(path, info, translation, 0, info.numPoints, nullptr,
+	               translatedBounds, err);
 }
 
 }

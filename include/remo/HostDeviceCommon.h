@@ -86,4 +86,59 @@ struct DeviceDiagnostics {
 	uint64_t drawSamples;
 };
 
+// Intra-kernel phase timing. See plans/05_HardCodedTest.md.
+//
+// GpuScope cannot see inside a launch: cuEventRecord is stream-ordered and
+// kernel_construct is one cooperative launch. These marks are the only way to
+// attribute time to the phases within it. They are written through REMO_MARK
+// (kernels/shared/remo_prelude.cuh), which compiles to nothing unless
+// REMO_PROFILE is defined, so a default build does none of the timing work. The
+// sink pointer is passed to the kernel either way, so the signature does not vary
+// with the build -- see plans/05_HardCodedTest.md on why that matters.
+
+// A mark is a grid-wide phase boundary ONLY when it sits immediately after a
+// grid.sync(). A mark that cannot be placed after a barrier must not be placed.
+
+constexpr uint32_t REMO_MAX_MARKS = 256;
+constexpr uint32_t REMO_MAX_EXPAND_ITERS = 20;  // == the loop bound in expand()
+
+// The phase that BEGINS at a mark. Differencing consecutive marks gives each
+// phase's duration; kPhaseBatchEnd terminates a batch and has no duration.
+enum ConstructPhase : uint32_t {
+	kPhaseBatchBegin = 0,
+	kPhaseExpand,
+	kPhaseVoxelSampling,
+	kPhaseAllocPointChunks,
+	kPhaseAllocVoxelChunks,
+	kPhaseInsertPoints,
+	kPhaseInsertVoxels,
+	kPhaseBatchEnd,
+	kNumConstructPhases
+};
+
+struct TimelineMark {
+	uint32_t phase;
+	uint32_t pad;
+	uint64_t ns;
+};
+
+struct DeviceTimeline {
+	uint32_t numMarks;
+	uint32_t overflow;  // more marks than REMO_MAX_MARKS
+	TimelineMark marks[REMO_MAX_MARKS];
+
+	// What milliseconds alone cannot answer: predicted depth would delete
+	// expand iterations 2..N and the spill re-descent, not all of expand.
+	uint32_t batches;      // batches folded into this launch
+	uint32_t expandIters;  // summed over batches
+	uint32_t nodesSplit;   // summed over batches
+	uint32_t pad1;
+	uint64_t spilledPoints;                        // summed over batches
+	uint64_t expandIterNs[REMO_MAX_EXPAND_ITERS];  // ns by iteration index
+};
+
+static_assert(sizeof(TimelineMark) == 16, "TimelineMark layout changed");
+static_assert(sizeof(DeviceTimeline) == 4288,
+              "DeviceTimeline layout changed; host and device must agree");
+
 }

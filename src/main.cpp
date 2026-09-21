@@ -161,9 +161,17 @@ void printUsage() {
 		"  --hide-points       do not rasterise samples. With --show-bounds this\n"
 		"                      leaves the octree structure alone on screen, which is\n"
 		"                      the only way to read it in a dense cloud.\n"
+		"  --device-budget <n> pin the device memory budget instead of deriving it\n"
+		"                      from what happens to be free. Accepts 9G / 8Gi / bytes.\n"
+		"                      Every memory figure is relative to this, so a benchmark\n"
+		"                      capture that does not pin it is not comparable.\n"
 		"  --strict-timing     synchronise and read CUevents every frame.\n"
 		"                      Accurate but slower; required for benchmarking,\n"
 		"                      since the default reads timings one frame late.\n"
+		"  --remolod-phase-timings\n"
+		"                      break RemoLOD's construct kernel down by phase (expand,\n"
+		"                      voxelSampling, insertPoints, ...). Compiles the kernel\n"
+		"                      with -DREMO_PROFILE; off, the device code is unchanged.\n"
 		"  --remolod-no-accum  build RemoLOD's octree without the per-node accumulator.\n"
 		"                      The pass mutates no tree state, so the structural counts\n"
 		"                      must be identical with it on and off -- that is its\n"
@@ -171,6 +179,45 @@ void printUsage() {
 		"  -h, --help          this message\n"
 		"\n"
 		"Files can also be dropped onto the window.\n");
+}
+
+// Plain bytes, or a K/M/G suffix -- decimal by default, binary with a trailing `i`
+// (so 10G is 10e9 and 10Gi is 10 * 2^30). Written out rather than reached for with
+// strtoull alone because a budget given in bytes is unreadable at these sizes and a
+// silently misparsed one would move every memory figure in the capture.
+bool parseByteSize(const std::string& text, size_t* out) {
+	char* end = nullptr;
+	const double value = std::strtod(text.c_str(), &end);
+	if (end == text.c_str() || value < 0.0) return false;
+
+	std::string suffix(end);
+	suffix.erase(0, suffix.find_first_not_of(" \t"));
+
+	bool binary = false;
+	if (!suffix.empty() && (suffix.back() == 'i' || suffix.back() == 'I')) {
+		binary = true;
+		suffix.pop_back();
+	}
+	if (!suffix.empty() && (suffix.back() == 'b' || suffix.back() == 'B')) {
+		suffix.pop_back();
+	}
+
+	double scale = 1.0;
+	if (suffix.empty()) {
+		if (binary) return false;
+	} else if (suffix.size() == 1) {
+		switch (std::tolower(static_cast<unsigned char>(suffix[0]))) {
+			case 'k': scale = binary ? 1024.0 : 1e3; break;
+			case 'm': scale = binary ? 1024.0 * 1024.0 : 1e6; break;
+			case 'g': scale = binary ? 1024.0 * 1024.0 * 1024.0 : 1e9; break;
+			default: return false;
+		}
+	} else {
+		return false;
+	}
+
+	*out = static_cast<size_t>(value * scale);
+	return true;
 }
 
 bool takeArg(int argc, char** argv, int& i, const char* flag, std::string* out) {
@@ -244,8 +291,20 @@ int main(int argc, char** argv) {
 			options.hidePoints = true;
 		} else if (arg == "--strict-timing") {
 			options.strictTiming = true;
+		} else if (arg == "--device-budget") {
+			std::string text;
+			if (!takeArg(argc, argv, i, "--device-budget", &text)) return 2;
+			if (!parseByteSize(text, &options.deviceBudgetBytes)) {
+				fprintf(stderr,
+				        "remobench: cannot parse --device-budget '%s' "
+				        "(try 9G, 8Gi, or a plain byte count)\n",
+				        text.c_str());
+				return 2;
+			}
 		} else if (arg == "--remolod-no-accum") {
 			options.remolodNoAccum = true;
+		} else if (arg == "--remolod-phase-timings") {
+			options.remolodPhaseTimings = true;
 		} else if (!arg.empty() && arg[0] != '-') {
 			options.files.push_back(arg);
 		} else {

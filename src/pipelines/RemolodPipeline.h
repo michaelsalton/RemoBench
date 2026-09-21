@@ -4,6 +4,7 @@
 #include <string>
 
 #include "remo/CudaModularProgram.h"
+#include "remo/HostDeviceCommon.h"
 #include "remo/ILodPipeline.h"
 #include "remo/RemoAccum.h"
 
@@ -36,12 +37,17 @@ public:
 	void setAccumEnabled(bool on) { m_accumEnabled = on; }
 	bool accumEnabled() const { return m_accumEnabled; }
 
+	// Must be set before initPrograms(): it selects the -DREMO_PROFILE variant
+	// of the construct kernel, which is what emits the phase marks.
+	void setPhaseTimings(bool on) { m_phaseTimings = on; }
+
 private:
 	void readStats();
 	void ensureScratch(int width, int height);
 	void fillUniforms(const FrameContext& frame, void* outUniforms) const;
 
 	void runAccumulator(const FrameContext& frame);
+	void readTimeline(const FrameContext& frame);
 
 	CudaContext& m_cuda;
 
@@ -81,8 +87,24 @@ private:
 	AccumGlobals m_accum = {};
 	bool m_accumEnabled = true;
 
+	// Intra-kernel phase timing. See plans/05_HardCodedTest.md.
+	CUdeviceptr m_timeline = 0;
+	bool m_phaseTimings = false;
+	double m_phaseMs[kNumConstructPhases] = {};
+	double m_expandIterMs[REMO_MAX_EXPAND_ITERS] = {};
+	double m_constructMsSeen = 0.0;
+	uint64_t m_phaseBatches = 0;
+	uint64_t m_phaseExpandIters = 0;
+	uint64_t m_phaseSpilledPoints = 0;
+	uint64_t m_phaseNodesSplit = 0;
+	uint32_t m_phaseOverflow = 0;
+
 	uint32_t m_batchesConsumed = 0;
 	uint32_t m_batchesTotal = 0;
+
+	// Reported once, not once per frame: a ring the kernel's addressing does not match
+	// stops the build for as long as it is wrong.
+	bool m_ringMismatchReported = false;
 };
 
 }

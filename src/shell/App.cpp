@@ -75,6 +75,8 @@ bool App::init(const AppOptions& options, std::string* err) {
 	if (!loaded) {
 		m_status = loadErr;
 		m_statusIsError = true;
+		m_startupFailed = true;
+		m_startupError = loadErr;
 		fprintf(stderr, "remobench: %s\n", loadErr.c_str());
 	}
 
@@ -86,6 +88,7 @@ void App::registerPipelines() {
 	m_registry.add([this] {
 		auto p = std::make_unique<RemolodPipeline>(*m_cuda);
 		p->setAccumEnabled(!m_options.remolodNoAccum);
+		p->setPhaseTimings(m_options.remolodPhaseTimings);
 		return p;
 	});
 	m_registry.add([this] { return std::make_unique<CudalodPipeline>(*m_cuda); });
@@ -96,6 +99,11 @@ DeviceBudget App::computeBudget() const {
 	DeviceBudget budget;
 	budget.vramTotal = m_cuda->totalMemory();
 	budget.vramFreeAtStartup = m_cuda->freeMemory();
+
+	if (m_options.deviceBudgetBytes != 0) {
+		budget.bytes = m_options.deviceBudgetBytes;
+		return budget;
+	}
 
 	constexpr double kUsableFraction = 0.85;
 	const size_t reserve = 512ull << 20;
@@ -138,16 +146,27 @@ bool App::loadCloud(const std::vector<std::string>& files, std::string* err) {
 	if (!activateCloud(err)) return false;
 
 	const double elapsed = std::max(1e-6, now() - tStart);
-	m_status = std::format("loaded {} points in {:.2f}s ({:.0f} MP/s)",
-	                       formatNumber(static_cast<double>(m_meta.numPoints)),
-	                       elapsed,
-	                       static_cast<double>(m_meta.numPoints) / 1e6 / elapsed);
-	m_statusIsError = false;
+	const std::string points = formatNumber(static_cast<double>(m_meta.numPoints));
+	const double mps = static_cast<double>(m_meta.numPoints) / 1e6 / elapsed;
 
-	printf("remobench: loaded %s points from %s in %.2fs (%.0f MP/s)\n",
-	       formatNumber(static_cast<double>(m_meta.numPoints)).c_str(),
-	       accepted.front().c_str(), elapsed,
-	       static_cast<double>(m_meta.numPoints) / 1e6 / elapsed);
+	// A streaming source has read coordinates and nothing else at this point, so calling
+	// that a load at N MP/s would be quoting a throughput for work that has not happened
+	// -- the points arrive a ring slot at a time while the tree is being built.
+	if (m_source->isFullyResident()) {
+		m_status = std::format("loaded {} points in {:.2f}s ({:.0f} MP/s)", points,
+		                       elapsed, mps);
+		printf("remobench: loaded %s points from %s in %.2fs (%.0f MP/s)\n",
+		       points.c_str(), accepted.front().c_str(), elapsed, mps);
+	} else {
+		const uint32_t slots = m_source->view().numSlots;
+		m_status = std::format("opened {} points in {:.2f}s (box scan); streaming "
+		                       "through a {}-slot ring",
+		                       points, elapsed, slots);
+		printf("remobench: opened %s points from %s in %.2fs (box scan only, "
+		       "%.0f MP/s); streaming through a %u-slot ring\n",
+		       points.c_str(), accepted.front().c_str(), elapsed, mps, slots);
+	}
+	m_statusIsError = false;
 	fflush(stdout);
 	return true;
 }
@@ -159,14 +178,24 @@ bool App::activateCloud(std::string* err) {
 	m_frameTimeStats.clear();
 	m_frameHistory.clear();
 
-	if (!m_source->start(PointSource::Mode::Whole, m_budget.bytes, err)) {
-		return false;
-	}
-
+	// Ingest is started inside switchTo(), from the incoming pipeline's PipelineInfo:
+	// whether the cloud has to be resident, and how deep its ring is, are the
+	// pipeline's requirements and only it knows them.
 	const std::string wanted =
 		m_registry.activeId().empty() ? m_options.pipeline : m_registry.activeId();
 	if (!m_registry.switchTo(wanted, m_source.get(), m_meta, m_budget, err)) {
 		return false;
+	}
+
+	// Clearing the gate is not the same as fitting. Say so up front rather than letting
+	// a silently truncated tree be read as a complete one.
+	if (const PipelineInfo* info = m_registry.find(wanted)) {
+		const std::string warning =
+			m_registry.completionWarning(*info, m_meta, m_budget);
+		if (!warning.empty()) {
+			printf("remobench: WARNING -- %s: %s\n", wanted.c_str(), warning.c_str());
+			fflush(stdout);
+		}
 	}
 
 	m_renderer.controls().frameBox(
@@ -326,6 +355,9 @@ void App::applyPendingLoad() {
 		m_status = err;
 		m_statusIsError = true;
 		fprintf(stderr, "remobench: %s\n", err.c_str());
+	} else {
+		m_startupFailed = false;
+		m_startupError.clear();
 	}
 
 	if (ok && m_registry.active()) {
@@ -406,6 +438,10 @@ int App::run() {
 				frame.profiler = &m_profiler;
 
 				pipeline->render(frame);
+				// Refill the ring before the consumer runs, within whatever window
+				// the last frame's consumption signal opened. A no-op for a
+				// whole-resident pipeline.
+				m_source->pump();
 				pipeline->build(*m_source, frame);
 
 				m_interop.unmap(nullptr);
@@ -429,7 +465,9 @@ int App::run() {
 			if (!ok) return 1;
 		}
 	}
-	return 0;
+	// A cloud or pipeline asked for on the command line that never activated is a
+	// failure, whatever the window did afterwards.
+	return m_startupFailed ? 1 : 0;
 }
 
 bool App::dumpFrame(const std::string& path) {
@@ -478,6 +516,27 @@ bool App::dumpFrame(const std::string& path) {
 	}
 	fclose(out);
 	printf("remobench: wrote %s (%dx%d)\n", path.c_str(), w, h);
+
+	// The budget moves with whatever else was on the GPU, so a capture that does not
+	// name it cannot be interpreted afterwards. Printed outside the pipeline block
+	// because it is exactly what a refusal has to be read against.
+	printf("  device budget       %.3f GB (%.3f GB free of %.3f GB at startup%s)\n",
+	       static_cast<double>(m_budget.bytes) / 1e9,
+	       static_cast<double>(m_budget.vramFreeAtStartup) / 1e9,
+	       static_cast<double>(m_budget.vramTotal) / 1e9,
+	       m_options.deviceBudgetBytes ? ", pinned by --device-budget" : "");
+
+	if (!m_registry.active()) {
+		printf("remobench: no active pipeline\n");
+		if (!m_startupError.empty()) {
+			printf("  refused             %s\n", m_startupError.c_str());
+		}
+		if (!m_status.empty() && m_status != m_startupError) {
+			printf("  status              %s\n", m_status.c_str());
+		}
+		fflush(stdout);
+		return true;
+	}
 
 	if (const ILodPipeline* pipeline = m_registry.active()) {
 		const PipelineStats& s = pipeline->stats();
@@ -537,6 +596,22 @@ bool App::dumpFrame(const std::string& path) {
 		printf("  device high water   %.3f GB of %.3f GB\n",
 		       static_cast<double>(s.bytesHighWater) / 1e9,
 		       static_cast<double>(s.bytesAllocated) / 1e9);
+
+		// Predicted against observed, so the 26 B/pt floor is a claim the dump checks
+		// rather than a number quoted from a paper. A large disagreement means the
+		// coefficient is wrong for this build, which is worth knowing early.
+		if (const PipelineInfo* info = m_registry.find(m_registry.activeId())) {
+			if (m_meta.numPoints > 0 && info->minBytesPerPointEstimate > 0.0) {
+				const double predicted =
+					m_registry.predictedCompletion(*info, m_meta, m_budget);
+				const double observed = static_cast<double>(s.numPointsIngested) /
+				                        static_cast<double>(m_meta.numPoints);
+				printf("  ingested            %.1f%% of the cloud (predicted %.1f%% "
+				       "at %.0f B/pt)\n",
+				       observed * 100.0, predicted * 100.0,
+				       info->minBytesPerPointEstimate);
+			}
+		}
 		if (m_profiler.droppedScopes() > 0) {
 			printf("  WARNING %llu profiler sample(s) dropped\n",
 			       static_cast<unsigned long long>(m_profiler.droppedScopes()));

@@ -74,6 +74,13 @@ public:
 	int begin(const char* name);
 	void end(int handle);
 
+	// Record a sample measured by something other than a CUevent pair, into the
+	// current regime. This is how intra-kernel phases reach the profiler:
+	// cuEventRecord is stream-ordered and cannot bracket a phase inside a single
+	// cooperative launch, so those durations are timed on the device and handed
+	// over here. See plans/02_ProfilingTools.md Layer 3.
+	void addSample(const char* name, double ms);
+
 	Regime regime() const { return m_regime; }
 
 	const ScopeStats* find(const std::string& name) const;

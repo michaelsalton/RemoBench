@@ -23,7 +23,13 @@ struct AppOptions {
 	int height = 900;
 	bool strictTiming = false;
 
+	// Overrides computeBudget() when non-zero, so a benchmark run stops depending on
+	// what else happened to be on the GPU. The budget is the one number every memory
+	// figure is relative to, so a capture that does not pin it is not comparable.
+	size_t deviceBudgetBytes = 0;
+
 	bool remolodNoAccum = false;
+	bool remolodPhaseTimings = false;
 
 	std::string dumpFramePath;
 	int dumpAfterFrames = 8;
@@ -121,6 +127,12 @@ private:
 
 	std::string m_status;
 	bool m_statusIsError = false;
+
+	// A cloud or pipeline named on the command line that never activated. Kept so the
+	// process can exit non-zero: a refusal used to leave a window with no pipeline and
+	// still exit 0, which made every gate change unverifiable from a script.
+	bool m_startupFailed = false;
+	std::string m_startupError;
 
 	std::vector<DatasetEntry> m_datasets;
 	std::string m_datasetDir = "data";

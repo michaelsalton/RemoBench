@@ -195,6 +195,11 @@ void GpuProfiler::end(int handle) {
 	m_pending.push_back(pending);
 }
 
+void GpuProfiler::addSample(const char* name, double ms) {
+	if (!name || !(ms >= 0.0)) return;
+	m_scopes[scopeIndex(name)].stats[static_cast<int>(m_regime)].add(ms);
+}
+
 void GpuProfiler::harvest(bool blocking) {
 	size_t keep = 0;
 	for (size_t i = 0; i < m_pending.size(); ++i) {

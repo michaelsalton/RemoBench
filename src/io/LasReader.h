@@ -38,6 +38,19 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
                    const double translation[3], Point* out,
                    double translatedBounds[6], std::string* err);
 
+// Points [firstPoint, firstPoint + numPoints), written to out[0..numPoints). This is
+// what lets a streaming source read one ring slot at a time instead of the whole file.
+bool readLasRange(const std::string& path, const LasHeaderInfo& info,
+                  const double translation[3], uint64_t firstPoint, uint64_t numPoints,
+                  Point* out, std::string* err);
+
+// Coordinates only: the same threaded walk, materialising no Points. One extra pass over
+// the file buys a box that is final before the first upload, which a streaming build
+// requires -- see walkLas() in the .cpp for why growing it later is not an option.
+bool readLasBounds(const std::string& path, const LasHeaderInfo& info,
+                   const double translation[3], double translatedBounds[6],
+                   std::string* err);
+
 bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
                    const double translation[3], Point* out,
                    double translatedBounds[6], std::string* err);

@@ -110,10 +110,11 @@ void App::drawStatsPanel() {
 	            double(m_budget.vramTotal) / 1e9);
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip(
-			"Computed once and handed unchanged to every pipeline, so memory\n"
-			"figures are comparable. Upstream instead grabs 80%% of whatever\n"
-			"happens to be free, which makes runs depend on what else was on\n"
-			"the GPU at the time.");
+			"Recomputed on every cloud load, then handed unchanged to every\n"
+			"pipeline for that cloud, so figures are comparable within a run.\n"
+			"It still tracks free VRAM, so two runs are only comparable if\n"
+			"--device-budget pinned it. Upstream instead grabs 80%% of whatever\n"
+			"happens to be free, every time.");
 	}
 
 	if (!pipeline) {

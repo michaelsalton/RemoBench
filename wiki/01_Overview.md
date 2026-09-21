@@ -182,19 +182,37 @@ happens instead at compile time through `#include`.
 ### 3.4 `PointSource` — the ingest seam
 
 [include/remo/PointSource.h](../include/remo/PointSource.h). One loader serves both consumer
-shapes, via a small trick: **a whole-cloud consumer is the streaming ring with non-wrapping
-slot addresses.**
+shapes. Both address batch *k* the same way — **the ring always wraps** — and they differ
+only in how deep it is:
 
 ```text
-Mode::Stream → deviceAddr(k) = ringBase     + (k % numSlots) * slotBytes
-Mode::Whole  → deviceAddr(k) = residentBase +  k             * slotBytes
+deviceAddr(k) = ringBase + (k % numSlots) * slotBytes
+
+Mode::Stream → numSlots = the consumer's BATCH_STREAM_SIZE; the host refills behind it
+Mode::Whole  → numSlots = the whole cloud, so k % numSlots == k and nothing is reused
 ```
 
+This section used to describe `Mode::Whole` as *non-wrapping* addressing, `residentBase +
+k * slotBytes`, and that was never achievable: `kernel_construct` computes `batchIndex %
+BATCH_STREAM_SIZE` itself ([progressive_octree_voxels.cu](../kernels/simlod/progressive_octree_voxels.cu)),
+so a consumer cannot select a non-wrapping mode. A flat resident feed agreed with that
+arithmetic only while *k* < 50, which is exactly where SimLOD's old 50M ceiling came from
+— not a property of SimLOD, but the shape of RemoBench's feed showing through. Writing
+`Mode::Whole` as the degenerate ring makes the two consistent, and the pipelines check it:
+the ring is either `BATCH_STREAM_SIZE` deep or deeper than the cloud, and anything else is
+refused rather than built from.
+
 Everything else — header scan, loader threads, per-slot `batchSizes[]`, `numBatchesUploaded`
-— is identical. `SimlodPipeline` therefore gets genuinely progressive construction across
-frames from an already-resident cloud: `kernel_construct` does not care that the points are
-all there, it just walks batches. That isolates construction cost from streaming cost, which
-is a legitimate measurement mode but **not** the paper's loading/generation overlap claim.
+— is identical, which is why the device code needed no change to go from one to the other.
+The producer refills only within the window the consumer's `stats->batchletIndex` opens, so
+a slot is never overwritten before the tree has read it; that invariant is checked on the
+host, because its failure has no device-side symptom at all. `flat` and `cudalod` stay on
+`Mode::Whole` because they genuinely need residency — one caches the device pointer across
+frames, the other reads the whole cloud in two launches.
+
+Ingest is synchronous: the refill is a blocking copy on the render thread. That is enough
+to build a cloud far larger than the device budget, and **not** the paper's
+loading/generation overlap claim, which needs a real copy stream.
 
 Coordinates are pre-translated on the host so the box minimum sits at the origin and device
 code never needs doubles. The translation is exactly `-boxMin`, because the octree root cube
@@ -204,13 +222,24 @@ nodes. A reader holding f64 coordinates applies it in f64 and narrows afterwards
 what buys sub-millimetre resolution on a cloud whose raw coordinates only have ~4 cm of f32
 resolution.
 
-Three readers exist, plus `makeSyntheticSource`: `readSimlod`
-([src/io/RawReader.cpp](../src/io/RawReader.cpp), ~100 MP/s, zero parsing — the on-disk
-record *is* our `Point`), `readLasPoints`
-([src/io/LasReader.cpp](../src/io/LasReader.cpp), ~110–140 MP/s across eight loader threads)
-and `readLazPoints` ([src/io/LazReader.cpp](../src/io/LazReader.cpp), laszip, ~5 MP/s and
+Three readers exist, plus `makeSyntheticSource`:
+[RawReader.cpp](../src/io/RawReader.cpp) (`.simlod`, ~100 MP/s, zero parsing — the on-disk
+record *is* our `Point`), [LasReader.cpp](../src/io/LasReader.cpp) (~110–140 MP/s across
+eight loader threads) and [LazReader.cpp](../src/io/LazReader.cpp) (laszip, ~5 MP/s and
 sequential). All three produce bit-identical trees and byte-identical frames from the same
-cloud, which is the only real check any of them has.
+cloud, which is the only real check any of them has — and the check to re-run after touching
+any of them.
+
+The two seekable formats also serve a **range**, and that is what a streaming source reads
+from: `readSimlodRange` / `readLasRange` fill one ring slot, and `readSimlodBounds` /
+`readLasBounds` walk the coordinates alone. The bounds pass exists because the box must be
+final before the first upload — `boxSize` sizes the octree root cube, so growing it
+mid-stream invalidates every node already built, and nothing on the device would complain
+(CudaLOD clamps the cell index, SimLOD's float→uint32 conversion saturates, so out-of-box
+points pile into cell 0 rather than faulting). It replaces the two-attempt re-read
+`loadLasCloud` used to do, which a streaming loader cannot afford. `.laz` has no cheap
+coordinate pass — laszip decodes sequentially with no seek — so it stays whole-cloud
+resident.
 
 ---
 
@@ -220,13 +249,13 @@ cloud, which is the only real check any of them has.
 | --- | --- | --- | --- | --- |
 | role | control / ground truth | **ours — the research** | comparison, batch | comparison, progressive |
 | may be edited | rarely | yes, freely | **no** | **no** |
-| residency | whole cloud | whole cloud (for now) | whole cloud required | streams batches into a live tree |
+| residency | whole cloud required | 50-slot wrapping ring | whole cloud required | 50-slot wrapping ring |
 | build | nothing; latches a pointer | one bounded launch per frame + accumulate | 2 cooperative launches, one shot | one bounded launch per frame |
 | structure | none | octree, 128³ 1-bit occupancy grid + `NodeAccum[]` | octree, counting-sort split to depth 12 | octree, 128³ 1-bit occupancy grid per inner node |
 | sample storage | array slices | chunk lists | contiguous slices | chunk lists |
 | selection | every 64k slice is visible | disjoint frontier, no mask needed | parent *and* children visible, octant-masked | disjoint frontier, no mask needed |
 | draw list capacity | 32,768 | 131,072 | 65,536 | 131,072 |
-| point ceiling | none | none | fits in budget | **50M** (upstream's batch ring; see §11) |
+| point ceiling | fits in budget | none | fits in budget | none |
 | scopes | `flat.render` | `remolod.reset`, `remolod.construct`, `remolod.accumulate`, `remolod.render` | `cudalod.split`, `cudalod.voxelize`, `cudalod.render` | `simlod.reset`, `simlod.construct`, `simlod.render` |
 
 `flat` is deliberately the smallest possible `ILodPipeline` and is the reference for writing a
@@ -236,7 +265,10 @@ path before any octree exists to confuse a bug with. It goes through the same `D
 rather than a private fast path, so the seam is tested by the control condition.
 
 `remolod` is a fork of `simlod` plus the accumulator, and its octree kernel is currently
-line-for-line SimLOD's apart from two constants (`BATCH_STREAM_SIZE`, `MAX_NODES_CAPACITY`).
+line-for-line SimLOD's apart from ONE constant (`MAX_NODES_CAPACITY`). It used to be two:
+`BATCH_STREAM_SIZE` was raised to 8192 to make a non-wrapping resident feed addressable past
+50M points, and once the ring genuinely wrapped that ceiling was gone and the constant went
+back down to upstream's 50 — a fork edit that removed a divergence rather than adding one.
 That is the intended starting point: the two pipelines build identical trees today, so any
 difference between them is attributable to the passes around construction. Refinement is what
 will make the fork diverge, and the diff against `kernels/simlod/` is what will explain how.
@@ -473,7 +505,13 @@ The short list of things that break the project rather than merely the build.
    [kernels/simlod/VENDORED.md](../kernels/simlod/VENDORED.md), not in the file. Check
    [THIRD_PARTY.md](../THIRD_PARTY.md) before copying anything new — one upstream file is
    CC BY-NC-SA and is deliberately unused.
-7. **`make check` after any `kernels/` change** — and remember that compiling is not
+7. **The ring's depth is the kernel's, and the producer stays inside the consumer's window.**
+   `kernel_construct` reads batch B from slot `B % BATCH_STREAM_SIZE` whatever the host
+   allocated, so the ring is either that deep or deeper than the whole cloud; and a slot is
+   never refilled until `stats->batchletIndex` says the tree has read it. Both are checked on
+   the host, because both fail *silently* — a tree built from overwritten or wrongly-addressed
+   points faults nothing, allocates nothing extra, and reports plausible node counts.
+8. **`make check` after any `kernels/` change** — and remember that compiling is not
    launching. `--check-kernels` links every program but launches none, so it cannot see a
    host/device signature mismatch. Pass kernel arguments as one shared struct (`AccumArgs`)
    to make that class of mistake unrepresentable.
@@ -495,6 +533,7 @@ The short list of things that break the project rather than merely the build.
 | what crosses to the device | [include/remo/HostDeviceCommon.h](../include/remo/HostDeviceCommon.h) |
 | how does selection reach the rasteriser | [kernels/shared/remo_draw.cuh](../kernels/shared/remo_draw.cuh) |
 | how is timing recorded | [include/remo/GpuProfiler.h](../include/remo/GpuProfiler.h), [plans/02_ProfilingTools.md](../plans/02_ProfilingTools.md) |
+| where does the update kernel's time go | [wiki/03_ExpandStageFindings.md](03_ExpandStageFindings.md) |
 | how does ingest work | [include/remo/PointSource.h](../include/remo/PointSource.h) |
 | how does hot reload work | [include/remo/CudaModularProgram.h](../include/remo/CudaModularProgram.h) |
 | what is the research claim | [plans/01_NoveltyAssessment.md](../plans/01_NoveltyAssessment.md) |

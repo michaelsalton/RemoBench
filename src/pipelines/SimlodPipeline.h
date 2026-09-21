@@ -67,6 +67,10 @@ private:
 
 	uint32_t m_batchesConsumed = 0;
 	uint32_t m_batchesTotal = 0;
+
+	// Reported once, not once per frame: a ring the kernel's addressing does not match
+	// stops the build for as long as it is wrong.
+	bool m_ringMismatchReported = false;
 };
 
 }

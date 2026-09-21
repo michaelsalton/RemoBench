@@ -107,9 +107,11 @@ There is no test suite yet: `tests/unit/` is empty and `REMOBENCH_BUILD_TESTS` i
 `make test` currently runs ctest against nothing. Verification today is `make check`,
 `--dump-frame` and the structural counts in `bench/reference/`.
 
-`.simlod`, `.las` and `.laz` all load, whole-cloud, and produce **bit-identical trees** from
-the same cloud — the strongest verification the readers have, and worth re-running after
-touching any of them.
+`.simlod`, `.las` and `.laz` all produce **bit-identical trees** from the same cloud — the
+strongest verification the readers have, and worth re-running after touching any of them.
+`.simlod` and `.las` are read a ring slot at a time after a coordinates-only bounds pre-pass,
+so the cloud is never on the host either; `.laz` decodes sequentially with no seek and stays
+whole-cloud resident.
 
 **Compare structural counts, not frames, for anything with an octree.** Only `flat` is
 run-to-run deterministic. `simlod`, `remolod` and `cudalod` all sample a voxel's colour from
@@ -151,8 +153,10 @@ is present.
 - **Explanatory notes go in `kernels/simlod/VENDORED.md`, not in the file.** That is what
   keeps "is this still upstream?" a diff rather than a judgement call.
 - **Never edit a baseline to make RemoLOD work.** Fork the file into `kernels/remolod/` and
-  change the fork. RemoLOD already diverges on two constants this way — see
-  `kernels/remolod/remolod_structures.cuh`.
+  change the fork. RemoLOD diverges on **one** constant this way (`MAX_NODES_CAPACITY`) —
+  see `kernels/remolod/remolod_structures.cuh`. It was two: a fork edit can also run
+  *backwards*, and `BATCH_STREAM_SIZE` went back to upstream's 50 once the ring made the
+  divergence unnecessary. Removing one is worth as much as adding one.
 - Prefer a **separate pass** over a hook, always. It is what makes the fork's diff reviewable,
   and in the accumulator's case it was also faster.
 - **Licence trap:** one upstream file is CC BY-NC-SA and is deliberately not used,
@@ -186,13 +190,17 @@ proposing a design that assumes otherwise.
 - **The node pool has no device-side capacity check.** `numNodes` is a bump index grown
   by `atomicAdd(&stats->numNodes, 8)`; the host clamping in `readStats` is the only place
   exhaustion is noticed. Anything that splits more eagerly must keep that reporting intact.
-- **SimLOD caps at 50M points, on purpose.** `kernel_construct` addresses batch N at
-  `(N % BATCH_STREAM_SIZE)` with `BATCH_STREAM_SIZE == 50`, and RemoBench feeds it a resident
-  cloud with no wrapping, so past 50 batches it re-reads slot 0 and builds from the wrong
-  points — silently, since nothing faults. `PipelineRegistry::unsupportedReason` refuses such
-  clouds for `simlod`. RemoLOD raises the constant in its own fork and takes them. Lifting it
-  for `simlod` means a genuinely wrapping ring in `PointSource`, which is the listed loader
-  work — **not** another edit to `structures.cuh`, which is how it was "fixed" before.
+- **The ring depth belongs to the kernel, and the producer stays inside the consumer's
+  window.** `kernel_construct` reads batch B from slot `B % BATCH_STREAM_SIZE`
+  unconditionally — there is no non-wrapping mode to select — so `PointSource` allocates
+  exactly that many slots (or more than the whole cloud, where nothing wraps) and refills a
+  slot only once `stats->batchletIndex` says the tree has read it. Both rules are checked on
+  the host, in `SimlodPipeline::build` and `CloudSource::uploadBatch`, because both fail
+  **silently**: a tree built from overwritten or wrongly-addressed points faults nothing and
+  reports plausible counts. The old 50M cap was this invariant violated by a resident feed,
+  not a property of SimLOD; it is gone, and RemoLOD's fork constant went back **down** to 50
+  with it. `PipelineRegistry` still refuses a whole-resident progressive feed past 50M,
+  which is the shape that was actually broken.
 - **Uniform control flow around `RemoAllocator`.** It is deliberately non-atomic: every
   thread walks the identical allocation sequence. No `alloc()` behind a branch, in a
   data-dependent condition, or in a loop with a varying trip count. See the banner in
@@ -225,9 +233,14 @@ proposing a design that assumes otherwise.
 - **Name whether the accumulator was on** for any RemoLOD construct-time figure. It adds an
   unconditional launch — ~2.5 ms per construct launch against ~10 ms for construct itself on
   morro_bay 36M — and `--remolod-no-accum` is how you difference the two.
+- **Always name the device budget.** It is derived from free VRAM unless `--device-budget`
+  pins it, and a progressive pipeline stops on `memCapacityReached` at whatever fraction the
+  budget holds — so two unpinned runs of the same cloud truncate at different point counts
+  and are not comparable. Anything quoted from a truncated run needs the budget beside it.
 - **RemoLOD and SimLOD currently build identical trees** (4,137 nodes / 12,742,751 voxels on
-  morro_bay 36M), because RemoLOD's forked octree kernel is still line-for-line SimLOD's apart
-  from two constants. That is the intended starting point: while it holds, any difference
+  morro_bay 36M; 169,000,000 points / 59,548,545 voxels / 20,633 nodes on morro_bay 350M at
+  `--device-budget 6G`), because RemoLOD's forked octree kernel is still line-for-line
+  SimLOD's apart from one constant. That is the intended starting point: while it holds, any difference
   between the two pipelines is attributable to the passes around construction. When Refinement
   starts changing the tree, this stops being true and the fork's diff is what explains why.
 - Recapture `bench/reference/` after a submodule bump or driver change.

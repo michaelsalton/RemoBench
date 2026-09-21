@@ -17,6 +17,20 @@ namespace remo {
 class PointSource;
 struct CloudMeta;
 
+// What the shell needs to know about a pipeline without knowing which one it is.
+//
+// The two byte-per-point numbers are deliberately separate, because one constant was
+// doing both jobs and the two pull in opposite directions: raising it to describe what
+// allocate() wants also raised the bar a cloud has to clear to be accepted at all, and
+// lowering it to accept a cloud silently shrank every persistent buffer.
+//
+//   bytesPerPointEstimate     appetite   -- the coefficient allocate() sizes with, and it
+//                                          clamps to whatever the budget leaves.
+//   minBytesPerPointEstimate  floor      -- what the structure costs per point actually
+//                                          stored. fits() refuses on this and nothing else.
+//
+// The floor is measured rather than guessed: SimLOD's Table 5 reports 9.1 GB for the 350M
+// Morro Bay cloud (26 B/pt), and RemoBench's own 36M tree independently comes to 25.7 B/pt.
 struct PipelineInfo {
 	std::string id;
 	std::string displayName;
@@ -24,7 +38,28 @@ struct PipelineInfo {
 	bool progressive = false;
 	bool needsWholeCloudResident = false;
 
+	// Device ring depth, in slots of PointSource::kSlotCapacity points. Zero means the
+	// pipeline takes the whole cloud resident and the input term scales with the cloud;
+	// non-zero means the input term is a flat ringSlots * kSlotCapacity * sizeof(Point)
+	// no matter how large the cloud is. That difference is the whole point of streaming.
+	uint32_t ringSlots = 0;
+
 	double bytesPerPointEstimate = 0.0;
+	double minBytesPerPointEstimate = 0.0;
+
+	// The smallest store the pipeline will run with at all. Non-zero only for a
+	// pipeline whose ingest truncates cleanly -- the progressive ones stop on
+	// memCapacityReached with a valid, smaller tree, so a budget below the full
+	// requirement is a smaller result rather than a failure, and refusing it would
+	// throw away the run this plan exists to make possible.
+	//
+	// Zero means the pipeline cannot truncate: a batch builder voxelizes the whole
+	// cloud or overruns its slab, so its full per-point requirement IS its floor.
+	uint64_t minStoreBytes = 0;
+
+	// Overhead that does not scale with the cloud: the momentary buffer, the node pool,
+	// per-node side arrays. Part of the floor, but not per point.
+	uint64_t fixedBytesEstimate = 0;
 };
 
 struct DeviceBudget {

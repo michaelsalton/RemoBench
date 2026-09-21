@@ -40,18 +40,25 @@ constexpr unsigned int kNodeBytes = 152u;
 
 // Must equal BATCH_STREAM_SIZE in structures.cuh (asserted in simlod_bridge.cuh).
 //
-// UPSTREAM'S VALUE, and the reason the SimLOD pipeline has a point-count ceiling.
-// kernel_construct addresses batch N at points + (N % BATCH_STREAM_SIZE) * MAX_BATCH_SIZE --
-// a ring of this many 1M-point slots. RemoBench currently feeds it the whole cloud already
-// resident in device memory, where batch N lives at points + N * MAX_BATCH_SIZE with NO
-// wrapping. Those two agree only while N < BATCH_STREAM_SIZE, so past 50 batches the kernel
-// silently re-reads slot 0 and builds a tree from the wrong points.
+// UPSTREAM'S VALUE, and now also RemoBench's actual device ring depth.
 //
-// This used to be raised to 8192 by editing structures.cuh. That worked, but it made the
-// comparison baseline stop being SimLOD. SimlodPipeline now refuses a cloud it cannot
-// address instead, and RemoLOD -- which owns its fork and may change what it likes -- raises
-// it in kernels/remolod/remolod_structures.cuh. The real fix for SimLOD is a wrapping
-// streaming ring in PointSource, which is the loader work the README already lists.
+// kernel_construct addresses batch N at points + (N % BATCH_STREAM_SIZE) * MAX_BATCH_SIZE --
+// a ring of this many 1M-point slots -- and it does so unconditionally, with no non-wrapping
+// mode to select. RemoBench used to feed it the whole cloud already resident, where batch N
+// lives at points + N * MAX_BATCH_SIZE with NO wrapping. Those two agree only while
+// N < BATCH_STREAM_SIZE, so past 50 batches the kernel silently re-read slot 0 and built a
+// tree from the wrong points. That, and not anything about SimLOD, was the 50M ceiling.
+//
+// PointSource now wraps: it allocates exactly this many slots and refills them behind the
+// consumer, so there is no ceiling and no divergence. The two workarounds the old feed
+// needed are both gone -- SimlodPipeline no longer refuses large clouds, and RemoLOD's fork
+// of structures.cuh is back to 50 (it had been raised to 8192, which as a real ring would be
+// 131 GB).
+//
+// It remains the one number a consumer must agree with the kernel about. SimlodPipeline
+// checks that the ring it is handed is either exactly this deep or deeper than the whole
+// cloud, because a mismatch reads a slot holding some other batch: no fault, no allocation
+// error, plausible node counts, wrong tree.
 //
 // The host also needs it because reset.cu unconditionally zeroes batchSizes[0 ..
 // BATCH_STREAM_SIZE-1], so any buffer handed to it must be at least that large. Getting that
@@ -59,7 +66,10 @@ constexpr unsigned int kNodeBytes = 152u;
 // indication of where.
 constexpr unsigned int kBatchStreamSize = 50u;
 
-// The largest cloud SimLOD's ring addressing can describe without wrapping onto itself.
+// The largest cloud a NON-wrapping feed can describe. Kept because a whole-resident feed
+// into kernel_construct is still limited to this, and PipelineRegistry still refuses that
+// combination -- it is the only thing standing between a wrongly-shaped feed and a silently
+// wrong tree. No pipeline is configured that way today.
 //
 // MAX_BATCH_SIZE is a function-local constexpr inside kernel_construct
 // (progressive_octree_voxels.cu:886), so no other translation unit can assert against it --
