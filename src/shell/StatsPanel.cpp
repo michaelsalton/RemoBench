@@ -1,7 +1,3 @@
-// The statistics dashboard: read-outs only. Nothing in this file mutates state,
-// so the panel can be hidden, resized or screenshotted without changing a run.
-// Anything that changes what the program does belongs in ControlPanel.cpp.
-
 #include <imgui.h>
 #include <implot.h>
 
@@ -18,19 +14,20 @@ namespace remo {
 
 namespace {
 
-// The wall-clock frame time over the retained window, as a filled sparkline with
-// a 60 fps reference. A single number cannot tell a steady 8 ms from an 8 ms mean
-// with a stall every second, which is exactly the difference progressive
-// construction makes while a cloud is still streaming in.
 void frameTimePlot(const FrameHistory& history) {
 	if (history.count == 0) return;
 
-	double peak = 0.0;
-	for (int i = 0; i < history.count; ++i) peak = std::max(peak, double(history.ms[i]));
-	const double yMax = std::max(20.0, peak * 1.15);
+	float window[FrameHistory::kCapacity];
+	std::copy(history.ms, history.ms + history.count, window);
+	std::sort(window, window + history.count);
+
+	const double peak = window[history.count - 1];
+	const double p95 = window[std::min(history.count - 1,
+	                                   int(history.count * 0.95))];
+	const double yMax = std::max(20.0, p95 * 1.4);
 
 	ImPlot::SetNextPlotLimits(0, FrameHistory::kCapacity, 0, yMax, ImGuiCond_Always);
-	if (ImPlot::BeginPlot("##frametime", nullptr, nullptr, ImVec2(-1, 74),
+	if (ImPlot::BeginPlot("##frametime", nullptr, nullptr, ImVec2(-1, 88),
 	                      ImPlotFlags_CanvasOnly, ImPlotAxisFlags_NoDecorations,
 	                      ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks)) {
 		const int offset = history.count == FrameHistory::kCapacity ? history.head : 0;
@@ -46,8 +43,8 @@ void frameTimePlot(const FrameHistory& history) {
 
 		ImPlot::EndPlot();
 	}
-	ImGui::TextDisabled("last %d frames, 0 - %.0f ms (line: 60 fps)", history.count,
-	                    yMax);
+	hint("last %d frames, 0 - %.0f ms   peak %.0f   (line: 60 fps)", history.count,
+	     yMax, peak);
 }
 
 }
@@ -82,10 +79,10 @@ void App::drawStatsPanel() {
 		}
 	}
 
-	ImGui::TextDisabled("timing regime: %s%s", regimeName(m_profiler.regime()),
-	                    m_profiler.regime() == Regime::Strict
-	                        ? ""
-	                        : "  (--strict-timing for per-frame attribution)");
+	hint("timing regime: %s%s", regimeName(m_profiler.regime()),
+	     m_profiler.regime() == Regime::Strict
+	         ? ""
+	         : "  (--strict-timing for per-frame attribution)");
 	if (m_profiler.droppedScopes() > 0) {
 		ImGui::TextColored(ImVec4(1, 0.6f, 0.2f, 1), "%llu timing sample(s) dropped",
 		                   static_cast<unsigned long long>(m_profiler.droppedScopes()));
@@ -105,7 +102,7 @@ void App::drawStatsPanel() {
 		ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
 		                   "float32 precision at the far corner: %.3f m", quantError);
 	} else {
-		ImGui::TextDisabled("float32 precision at the far corner: %.4f m", quantError);
+		hint("float32 precision at the far corner: %.4f m", quantError);
 	}
 
 	sectionHeader("Device memory");

@@ -11,6 +11,7 @@
 #include "remo/CudaContext.h"
 #include "remo/GpuProfiler.h"
 #include "remo/PointSource.h"
+#include "shell/GuiWidgets.h"
 #include "shell/TimingUi.h"
 
 #include "../../kernels/cudalod/common.h"
@@ -354,11 +355,10 @@ void CudalodPipeline::render(const FrameContext& frame) {
 	}
 }
 
-void CudalodPipeline::gui(const GpuProfiler& profiler) {
-	ImGui::TextUnformatted(
-		"Batch construction: the whole cloud is resident, then\n"
-		"split (kernel2) and voxelise (kernel3) build the tree in one shot.");
-	ImGui::Separator();
+void CudalodPipeline::guiControls() {
+	paragraph(
+		"Batch construction: the whole cloud is resident, then split (kernel2) "
+		"and voxelise (kernel3) build the tree in one shot.");
 
 	ImGui::TextUnformatted("sampling strategy");
 	const int previous = m_strategy;
@@ -370,7 +370,18 @@ void CudalodPipeline::gui(const GpuProfiler& profiler) {
 		m_clearTimingRequested = true;
 	}
 
-	ImGui::Separator();
+	if (ImGui::Button("rebuild")) m_rebuildRequested = true;
+
+	if (m_renderProgram && m_renderProgram->isStale()) {
+		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
+		                   "render kernel failed to recompile;\n"
+		                   "showing the previously loaded version");
+	}
+}
+
+void CudalodPipeline::guiStats(const GpuProfiler& profiler) {
+	ImGui::TextDisabled("sampling: %s", strategyName(m_strategy));
+
 	if (ImGui::BeginTable("cudalod_timing", 2, ImGuiTableFlags_SizingStretchProp)) {
 		auto row = [](const char* label, const char* fmt, double v) {
 			ImGui::TableNextRow();
@@ -395,14 +406,6 @@ void CudalodPipeline::gui(const GpuProfiler& profiler) {
 		row("watermark split", "%.2f GB", double(m_allocatedSplitting) / 1e9);
 		row("watermark voxelize", "%.2f GB", double(m_allocatedVoxelization) / 1e9);
 		ImGui::EndTable();
-	}
-
-	if (ImGui::Button("rebuild")) m_rebuildRequested = true;
-
-	if (m_renderProgram && m_renderProgram->isStale()) {
-		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
-		                   "render kernel failed to recompile;\n"
-		                   "showing the previously loaded version");
 	}
 }
 

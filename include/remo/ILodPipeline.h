@@ -103,7 +103,9 @@ public:
 
 	virtual TimingScopes timingScopes() const = 0;
 
-	virtual void gui(const GpuProfiler& profiler) { (void)profiler; }
+	virtual void guiControls() {}
+
+	virtual void guiStats(const GpuProfiler& profiler) { (void)profiler; }
 
 	virtual std::vector<std::string> diagnostics() const { return {}; }
 };

@@ -29,7 +29,8 @@ public:
 
 	const PipelineStats& stats() const override { return m_stats; }
 	TimingScopes timingScopes() const override;
-	void gui(const GpuProfiler& profiler) override;
+	void guiControls() override;
+	void guiStats(const GpuProfiler& profiler) override;
 	std::vector<std::string> diagnostics() const override;
 
 	void setAccumEnabled(bool on) { m_accumEnabled = on; }

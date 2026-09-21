@@ -50,6 +50,25 @@ struct SharedSettings {
 	bool showPoints = true;
 };
 
+struct FrameHistory {
+	static constexpr int kCapacity = 240;
+
+	float ms[kCapacity] = {};
+	int head = 0;
+	int count = 0;
+
+	void add(float value) {
+		ms[head] = value;
+		head = (head + 1) % kCapacity;
+		if (count < kCapacity) ++count;
+	}
+
+	void clear() {
+		head = 0;
+		count = 0;
+	}
+};
+
 struct DatasetEntry {
 	std::string path;
 	std::string label;
@@ -78,6 +97,8 @@ private:
 	DeviceBudget computeBudget() const;
 
 	void drawGui();
+	void drawControlPanel();
+	void drawStatsPanel();
 
 	bool dumpFrame(const std::string& path);
 
@@ -96,6 +117,7 @@ private:
 	GpuProfiler m_profiler;
 
 	ScopeStats m_frameTimeStats;
+	FrameHistory m_frameHistory;
 
 	std::string m_status;
 	bool m_statusIsError = false;

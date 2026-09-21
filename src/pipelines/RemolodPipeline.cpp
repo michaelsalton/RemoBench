@@ -12,6 +12,7 @@
 #include "remo/GpuProfiler.h"
 #include "remo/PointSource.h"
 #include "remo/unsuck.hpp"
+#include "shell/GuiWidgets.h"
 #include "shell/TimingUi.h"
 
 #include "../../kernels/simlod/HostDeviceInterface.h"
@@ -457,20 +458,10 @@ std::vector<std::string> RemolodPipeline::diagnostics() const {
 	return out;
 }
 
-void RemolodPipeline::gui(const GpuProfiler& profiler) {
-	ImGui::TextUnformatted(
-		"RemoBench's own pipeline. Progressive construction forked from\n"
-		"SimLOD, plus the per-node accumulator the detail-aware work needs.");
-	ImGui::Separator();
-
-	if (m_batchesTotal > 0) {
-		const float progress =
-			static_cast<float>(m_batchesConsumed) / static_cast<float>(m_batchesTotal);
-		char overlay[64];
-		snprintf(overlay, sizeof(overlay), "%u / %u batches", m_batchesConsumed,
-		         m_batchesTotal);
-		ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), overlay);
-	}
+void RemolodPipeline::guiControls() {
+	paragraph(
+		"RemoBench's own pipeline. Progressive construction forked from SimLOD, "
+		"plus the per-node accumulator the detail-aware work needs.");
 
 	ImGui::Checkbox("accumulate (per-node sums)", &m_accumEnabled);
 	ImGui::SameLine();
@@ -480,6 +471,28 @@ void RemolodPipeline::gui(const GpuProfiler& profiler) {
 			"Off leaves the tree identical -- the pass mutates nothing.\n"
 			"That is the acceptance test: --dump-frame must be byte-identical\n"
 			"with it on and off. Also reachable as --remolod-no-accum.");
+	}
+
+	if (ImGui::Button("rebuild")) m_needsReset = true;
+
+	hint("ingest is the resident path, not the paper's overlapped streaming "
+	     "loader -- construction is progressive, loading is not");
+
+	if (m_renderProgram && m_renderProgram->isStale()) {
+		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
+		                   "render kernel failed to recompile;\n"
+		                   "showing the previously loaded version");
+	}
+}
+
+void RemolodPipeline::guiStats(const GpuProfiler& profiler) {
+	if (m_batchesTotal > 0) {
+		const float progress =
+			static_cast<float>(m_batchesConsumed) / static_cast<float>(m_batchesTotal);
+		char overlay[64];
+		snprintf(overlay, sizeof(overlay), "%u / %u batches", m_batchesConsumed,
+		         m_batchesTotal);
+		ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), overlay);
 	}
 
 	if (ImGui::BeginTable("remolod_timing", 2, ImGuiTableFlags_SizingStretchProp)) {
@@ -547,21 +560,8 @@ void RemolodPipeline::gui(const GpuProfiler& profiler) {
 		ImGui::EndTable();
 	}
 
-	ImGui::TextDisabled(
-		"the watermark is maintained but is NOT a closure oracle yet --\n"
-		"no reader sorts points into Morton order");
-
-	if (ImGui::Button("rebuild")) m_needsReset = true;
-
-	ImGui::TextDisabled(
-		"ingest is the resident path, not the paper's overlapped\n"
-		"streaming loader -- construction is progressive, loading is not");
-
-	if (m_renderProgram && m_renderProgram->isStale()) {
-		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
-		                   "render kernel failed to recompile;\n"
-		                   "showing the previously loaded version");
-	}
+	hint("the watermark is maintained but is NOT a closure oracle yet -- no "
+	     "reader sorts points into Morton order");
 }
 
 }

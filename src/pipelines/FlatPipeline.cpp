@@ -6,6 +6,7 @@
 #include "remo/CudaContext.h"
 #include "remo/GpuProfiler.h"
 #include "remo/PointSource.h"
+#include "shell/GuiWidgets.h"
 #include "shell/TimingUi.h"
 
 namespace remo {
@@ -158,13 +159,20 @@ void FlatPipeline::render(const FrameContext& frame) {
 	}
 }
 
-void FlatPipeline::gui(const GpuProfiler& profiler) {
-	ImGui::TextUnformatted(
-		"No LOD: every point is rasterised every frame.\n"
-		"This is the control condition and the image-quality ground truth\n"
-		"that LOD pipelines are compared against.");
-	ImGui::Separator();
+void FlatPipeline::guiControls() {
+	paragraph(
+		"No LOD: every point is rasterised every frame. This is the control "
+		"condition and the image-quality ground truth that LOD pipelines are "
+		"compared against.");
 
+	if (m_program && m_program->isStale()) {
+		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
+		                   "kernel source changed but failed to compile;\n"
+		                   "showing the previously loaded version");
+	}
+}
+
+void FlatPipeline::guiStats(const GpuProfiler& profiler) {
 	if (ImGui::BeginTable("flat_timing", 2, ImGuiTableFlags_SizingStretchProp)) {
 		timingRow(profiler, "render (ms)", "flat.render");
 		ImGui::EndTable();
@@ -172,11 +180,6 @@ void FlatPipeline::gui(const GpuProfiler& profiler) {
 
 	ImGui::Text("render scratch: %.1f MB",
 	            static_cast<double>(m_scratchBytes) / (1024.0 * 1024.0));
-	if (m_program && m_program->isStale()) {
-		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
-		                   "kernel source changed but failed to compile;\n"
-		                   "showing the previously loaded version");
-	}
 }
 
 }

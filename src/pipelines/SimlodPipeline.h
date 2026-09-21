@@ -28,7 +28,8 @@ public:
 
 	const PipelineStats& stats() const override { return m_stats; }
 	TimingScopes timingScopes() const override;
-	void gui(const GpuProfiler& profiler) override;
+	void guiControls() override;
+	void guiStats(const GpuProfiler& profiler) override;
 
 private:
 	void readStats();

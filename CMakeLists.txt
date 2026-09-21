@@ -51,7 +51,8 @@ add_executable(remobench
 	src/shell/GLRenderer.cpp
 	src/shell/GpuProfiler.cpp
 	src/shell/PipelineRegistry.cpp
-	src/shell/SettingsPanel.cpp
+	src/shell/ControlPanel.cpp
+	src/shell/StatsPanel.cpp
 	src/shell/TimingUi.cpp
 	src/io/PointSource.cpp
 	src/io/RawReader.cpp

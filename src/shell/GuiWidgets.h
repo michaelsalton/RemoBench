@@ -1,9 +1,6 @@
 #pragma once
 
-// Widgets shared by the two top-level panels (ControlPanel.cpp, StatsPanel.cpp).
-// Header-only because ImGui 1.81 predates ImGui::BeginDisabled(), so every one of
-// these is a two-line wrapper that wants to inline.
-
+#include <cstdarg>
 #include <cstdint>
 
 #include <imgui.h>
@@ -13,12 +10,9 @@
 
 namespace remo {
 
-// The control panel is anchored top-left and the dashboard top-right, so neither
-// sits over the middle of the viewport where the cloud is. Both are ordinary
-// movable, resizable windows once placed.
 inline constexpr float kPanelMargin = 12.0f;
-inline constexpr float kControlPanelWidth = 400.0f;
-inline constexpr float kStatsPanelWidth = 420.0f;
+inline constexpr float kControlPanelWidth = 440.0f;
+inline constexpr float kStatsPanelWidth = 500.0f;
 
 inline void sectionHeader(const char* label) {
 	ImGui::Spacing();
@@ -37,6 +31,19 @@ inline void endDisabled(bool disabled) {
 	if (!disabled) return;
 	ImGui::PopStyleVar();
 	ImGui::PopItemFlag();
+}
+
+inline void paragraph(const char* text) { ImGui::TextWrapped("%s", text); }
+
+inline void hint(const char* fmt, ...) IM_FMTARGS(1);
+inline void hint(const char* fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	ImGui::PushStyleColor(ImGuiCol_Text,
+	                      ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+	ImGui::TextWrappedV(fmt, args);
+	ImGui::PopStyleColor();
+	va_end(args);
 }
 
 inline void statRow(const char* label, uint64_t value) {

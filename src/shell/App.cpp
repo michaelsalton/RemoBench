@@ -157,6 +157,7 @@ bool App::activateCloud(std::string* err) {
 
 	m_profiler.clear();
 	m_frameTimeStats.clear();
+	m_frameHistory.clear();
 
 	if (!m_source->start(PointSource::Mode::Whole, m_budget.bytes, err)) {
 		return false;
@@ -374,6 +375,7 @@ int App::run() {
 			m_options.strictTiming ? Regime::Strict : Regime::Deferred;
 		m_profiler.beginFrame(m_frameCounter, regime, nullptr);
 		m_frameTimeStats.add(m_renderer.frameMs());
+		m_frameHistory.add(static_cast<float>(m_renderer.frameMs()));
 
 		SharedUniforms uniforms = buildUniforms();
 

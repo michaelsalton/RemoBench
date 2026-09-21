@@ -12,6 +12,7 @@
 #include "remo/GpuProfiler.h"
 #include "remo/PointSource.h"
 #include "remo/unsuck.hpp"
+#include "shell/GuiWidgets.h"
 #include "shell/TimingUi.h"
 
 #include "../../kernels/simlod/HostDeviceInterface.h"
@@ -355,12 +356,24 @@ void SimlodPipeline::render(const FrameContext& frame) {
 	}
 }
 
-void SimlodPipeline::gui(const GpuProfiler& profiler) {
-	ImGui::TextUnformatted(
-		"Progressive construction: one bounded launch per frame inserts\n"
-		"batches into the octree while it is being rendered.");
-	ImGui::Separator();
+void SimlodPipeline::guiControls() {
+	paragraph(
+		"Progressive construction: one bounded launch per frame inserts batches "
+		"into the octree while it is being rendered.");
 
+	if (ImGui::Button("rebuild")) m_needsReset = true;
+
+	hint("ingest is the resident path, not the paper's overlapped streaming "
+	     "loader -- construction is progressive, loading is not");
+
+	if (m_renderProgram && m_renderProgram->isStale()) {
+		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
+		                   "render kernel failed to recompile;\n"
+		                   "showing the previously loaded version");
+	}
+}
+
+void SimlodPipeline::guiStats(const GpuProfiler& profiler) {
 	if (m_batchesTotal > 0) {
 		const float progress =
 			static_cast<float>(m_batchesConsumed) / static_cast<float>(m_batchesTotal);
@@ -395,18 +408,6 @@ void SimlodPipeline::gui(const GpuProfiler& profiler) {
 		row("persistent", "%.2f GB", double(m_persistentBytes) / 1e9);
 		row("high water", "%.2f GB", double(m_stats.bytesHighWater) / 1e9);
 		ImGui::EndTable();
-	}
-
-	if (ImGui::Button("rebuild")) m_needsReset = true;
-
-	ImGui::TextDisabled(
-		"ingest is the resident path, not the paper's overlapped\n"
-		"streaming loader -- construction is progressive, loading is not");
-
-	if (m_renderProgram && m_renderProgram->isStale()) {
-		ImGui::TextColored(ImVec4(1, 0.4f, 0.2f, 1),
-		                   "render kernel failed to recompile;\n"
-		                   "showing the previously loaded version");
 	}
 }
 

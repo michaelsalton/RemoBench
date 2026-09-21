@@ -75,6 +75,13 @@ own budget interpretation or its own loader destroys the only baseline the resea
 If a pipeline genuinely needs different behaviour, that is a finding to surface, not a
 special case to add. Say so rather than diverging the shared path.
 
+**The GUI is two panels, and the split is enforced in the contract.** `ControlPanel.cpp`
+holds everything that changes what the program does; `StatsPanel.cpp` holds read-outs and
+mutates nothing, so it can be hidden, resized or screenshotted without changing a run.
+`ILodPipeline` therefore has two hooks, `guiControls()` and `guiStats()`, rather than one
+`gui()` — splitting the hook rather than the call site is what stops a pipeline smuggling a
+button into the dashboard. Shared widgets live in `src/shell/GuiWidgets.h`.
+
 ## Working here
 
 ```sh
@@ -121,7 +128,7 @@ is present.
 | Path | Contents |
 | --- | --- |
 | `include/remo/` | Public headers — the pipeline SDK (`ILodPipeline.h` is the contract) |
-| `src/shell/` | Window, orbit camera, ImGui panel, pipeline registry |
+| `src/shell/` | Window, orbit camera, the two ImGui panels, pipeline registry |
 | `src/cuda/` | NVRTC wrapper, CUDA context, GL interop |
 | `src/io/` | Point cloud readers |
 | `src/pipelines/` | Host side of each pipeline (flat, remolod, cudalod, simlod) |

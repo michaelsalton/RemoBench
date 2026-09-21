@@ -1,7 +1,3 @@
-// The control panel: everything that changes what the program does. Read-outs
-// live in StatsPanel.cpp, so a screenshot of one panel answers "what was set"
-// and the other "what happened".
-
 #include <imgui.h>
 
 #include "remo/unsuck.hpp"
