@@ -1,26 +1,7 @@
-// RemoLOD's fork of SimLOD's progressive_octree_voxels.cu.
-//
-// FORKED, NOT VENDORED. RemoLOD is RemoBench's own pipeline and this file is ours to change;
-// bench/check_vendored.sh does not police it, and it is NOT expected to stay identical to
-// external/SimLOD. The comparison baseline lives in kernels/simlod/ and stays byte-identical
-// -- that is the whole point of the split. Never "fix" one by editing the other.
-//
 // Derived from SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647, MIT,
 // Copyright 2023 Markus Schuetz and Lukas Herzberger (see THIRD_PARTY.md).
-//
-// kernel_construct: inserts up to 20 uploaded 1M-point batches into the LIVE octree per
-// launch, under a 10ms device-side wall-clock budget, advancing stats->batchletIndex.
-//
-// IDENTICAL TO SimLOD TODAY apart from the include of remolod_structures.cuh. That is
-// deliberate: while it stays that way, any difference RemoLOD shows against the simlod
-// pipeline is attributable to the passes AROUND this kernel rather than to a divergence
-// inside it. The Refinement kernel is what will eventually change that, and when it does,
-// the divergence should be a reviewable diff against this starting point.
-//
-// The accumulator does NOT live here. It is a separate launch (remolod_accum.cu) that reads
-// the finished tree, which is why nothing in this file had to be hooked.
 
-// Some code in this file, particularly frustum, ray and intersection tests, 
+// Some code in this file, particularly frustum, ray and intersection tests,
 // is adapted from three.js. Three.js is licensed under the MIT license
 // This file this follows the three.js licensing
 // License: MIT https://github.com/mrdoob/three.js/blob/dev/LICENSE
@@ -38,7 +19,7 @@
 
 #include "../CudaPrint/CudaPrint.cuh"
 
-namespace cg = cooperative_groups; 
+namespace cg = cooperative_groups;
 
 constexpr uint64_t VOXEL_BACKLOG_CAPACITY = 10'000'000;
 constexpr float MAX_PROCESSING_TIME = 10.0f;
@@ -54,7 +35,6 @@ uint32_t* numBacklogVoxels = nullptr;
 Chunk** chunkQueue         = nullptr;
 CudaPrint* cudaprint       = nullptr;
 
-// https://colorbrewer2.org/#type=diverging&scheme=Spectral&n=8 (byte order inverted)
 uint32_t SPECTRAL[8] = {
 	0x4f3ed5,
 	0x436df4,
@@ -66,47 +46,22 @@ uint32_t SPECTRAL[8] = {
 	0xbd8832,
 };
 
-// - Create a voxel for <point> in <node>.
-// - If a voxel at that cell exists, ignore point
-// - <pX_full> are a point's voxel coordinates at maximum octree depth
-void sampleVoxel(Node* node, 
-	uint32_t pX_full, uint32_t pY_full, uint32_t pZ_full, 
-	Point point, 
+void sampleVoxel(Node* node,
+	uint32_t pX_full, uint32_t pY_full, uint32_t pZ_full,
+	Point point,
 	float3 octreeMin, float3 octreeMax, float octreeSize
 ){
 
 	if(node->grid == nullptr) return;
-	// if(level != 0) return;
 
-	// node coordinate in current level's voxel precision
-	// level 0: [0, 128), 
-	// level 1: [0, 256), ...
-	// uint32_t nX = node->X * 128 * (1 << node->level);
-	// uint32_t nY = node->Y * 128 * (1 << node->level);
-	// uint32_t nZ = node->Z * 128 * (1 << node->level);
-
-	// point coordinate in current level's voxel precision
-	// from max precision of 2^24 = [0, 16'777'216)
-	// for level 0, we need to go from 2^24 to 2^7
-	// for level 1, we need to go from 2^24 to 2^8
-	// dividing by 2^n is equal to 2^(24 - n)
-	// so we need to divide by 2^(17-level)
-	// uint32_t pX_leveled = pX_full / (1 << (17 - node->level));
-	// uint32_t pY_leveled = pY_full / (1 << (17 - node->level));
-	// uint32_t pZ_leveled = pZ_full / (1 << (17 - node->level));
-
-	// reduce voxel coordinates from octree's max_depth to current node's depth,
-	// by halving for each level in between
 	uint32_t pX_leveled = pX_full / (1 << ((MAX_DEPTH + 1) - node->level));
 	uint32_t pY_leveled = pY_full / (1 << ((MAX_DEPTH + 1) - node->level));
 	uint32_t pZ_leveled = pZ_full / (1 << ((MAX_DEPTH + 1) - node->level));
 
-	// now make voxel coordinates relative to current node instead of octree
 	uint32_t pX = pX_leveled % GRID_SIZE;
 	uint32_t pY = pY_leveled % GRID_SIZE;
 	uint32_t pZ = pZ_leveled % GRID_SIZE;
 
-	// check if point's bit in node's 1-bit voxel sampling grid is set
 	uint32_t voxelIndex = pX + pY * GRID_SIZE + pZ * GRID_SIZE * GRID_SIZE;
 	uint32_t voxelGridElementIndex = voxelIndex / 32;
 	uint32_t voxelGridElementBitIndex = voxelIndex % 32;
@@ -117,19 +72,15 @@ void sampleVoxel(Node* node,
 
 	uint32_t old = atomicOr(&node->grid->values[voxelGridElementIndex], bitmask);
 
-	// if it is not set, we create a voxel from the point!
 	if((old & bitmask) == 0){
-		// first point in cell!
 		atomicAdd(&node->numVoxels, 1);
 
 		float nodeSize = octreeSize / pow(2.0f, float(node->level));
 
-		// node-min
 		float nodeMin_x = (float(node->X) + 0.0f) * nodeSize + octreeMin.x;
 		float nodeMin_y = (float(node->Y) + 0.0f) * nodeSize + octreeMin.y;
 		float nodeMin_z = (float(node->Z) + 0.0f) * nodeSize + octreeMin.z;
 
-		// TODO: QUANTIZE
 		Point voxel;
 		voxel.x = nodeMin_x + nodeSize * (float(pX) + 0.5f) / float(GRID_SIZE);
 		voxel.y = nodeMin_y + nodeSize * (float(pY) + 0.5f) / float(GRID_SIZE);
@@ -142,11 +93,10 @@ void sampleVoxel(Node* node,
 	}
 }
 
-
 bool doCounting(
-	Node* root, Point* points, int numPoints, 
+	Node* root, Point* points, int numPoints,
 	float3 octreeMin, float3 octreeMax, float octreeSize,
-	Node* nodes, 
+	Node* nodes,
 	Node** spillingNodes, uint32_t* numSpillingNodes,
 	Point* spilledPoints, uint32_t* numSpilledPoints,
 	uint32_t countIteration
@@ -156,8 +106,6 @@ bool doCounting(
 
 	auto t_00 = nanotime();
 
-	// quantization grid for coordinates
-	// we want octree node coordinates for a max depth of, e.g., 16
 	float fGridSize = pow(2.0f, float(MAX_DEPTH));
 
 	*numSpillingNodes = 0;
@@ -166,19 +114,16 @@ bool doCounting(
 
 	auto countPoint = [&](Point point){
 
-		// node coordinate at MAX_DEPTH
 		uint32_t X = fGridSize * (point.x - octreeMin.x) / octreeSize;
 		uint32_t Y = fGridSize * (point.y - octreeMin.y) / octreeSize;
 		uint32_t Z = fGridSize * (point.z - octreeMin.z) / octreeSize;
 
-		// integer point coordinate relative to root node
 		uint32_t pX = MAX_DEPTH_GRIDSIZE * (point.x - octreeMin.x) / octreeSize;
 		uint32_t pY = MAX_DEPTH_GRIDSIZE * (point.y - octreeMin.y) / octreeSize;
 		uint32_t pZ = MAX_DEPTH_GRIDSIZE * (point.z - octreeMin.z) / octreeSize;
 
 		Node* current = root;
 
-		// traverse to leaf node, compute some data about it
 		int level = 0;
 		uint32_t level_X;
 		uint32_t level_Y;
@@ -201,7 +146,6 @@ bool doCounting(
 			childIndex = (child_X << 2) | (child_Y << 1) | child_Z;
 
 			if(current->children[childIndex] == nullptr){
-				// current == leaf!
 				break;
 			}else{
 				current = current->children[childIndex];
@@ -210,18 +154,8 @@ bool doCounting(
 
 		Node* leaf = current;
 
-		// count points in leaf nodes
 		if(leaf->countIteration < countIteration){
 
-			// one atomicAdd per point
-			// uint32_t old = atomicAdd(&leaf->numPoints, 1);
-			// if(old == MAX_POINTS_PER_NODE){
-			// 	// needs splitting
-			// 	uint32_t spillIndex = atomicAdd(numSpillingNodes, 1);
-			// 	spillingNodes[spillIndex] = leaf;
-			// }
-
-			// merge atomicAdds within warps to reduce contention
 			uint64_t leafptr = uint64_t(leaf);
 			auto warp = cg::coalesced_threads();
 			auto group = cg::labeled_partition(warp, leafptr);
@@ -233,7 +167,6 @@ bool doCounting(
 				if(old <= MAX_POINTS_PER_NODE)
 				if(old + group.num_threads() > MAX_POINTS_PER_NODE)
 				{
-					// needs splitting
 					uint32_t spillIndex = atomicAdd(numSpillingNodes, 1);
 					spillingNodes[spillIndex] = leaf;
 				}
@@ -243,29 +176,25 @@ bool doCounting(
 
 	auto t_10 = nanotime();
 
-	// Count points of current batch
 	processRange(numPoints, [&](int pointID){
 		Point point = points[pointID];
-		
+
 		countPoint(point);
 	});
 
 	grid.sync();
-	
+
 	auto t_20 = nanotime();
 
-	// count spilled points of previous iterations of current batch
 	processRange(*numSpilledPoints, [&](int pointID){
 		Point point = spilledPoints[pointID];
-		
+
 		countPoint(point);
 	});
 
 	grid.sync();
 	auto t_30 = nanotime();
 
-	// iterate through "numSpillingNodes" nodes.
-	// borrow "numSpillingNodes" as a counter and temparily store its value in realNumSpillingNodes
 	uint32_t realNumSpillingNodes = *numSpillingNodes;
 
 	grid.sync();
@@ -289,7 +218,6 @@ bool doCounting(
 		Chunk* chunk = node->points;
 		int chunkIndex = 0;
 
-		// iterate through all points in all chunks
 		for(
 			int pointIndex = block.thread_rank();
 			pointIndex < node->numPoints;
@@ -311,7 +239,6 @@ bool doCounting(
 	}
 
 	grid.sync();
-	// now revert to original value
 	*numSpillingNodes = realNumSpillingNodes;
 
 	grid.sync();
@@ -330,12 +257,9 @@ bool doCounting(
 bool doSplitting(Node* nodes, Node** spillingNodes, uint32_t* numSpillingNodes){
 	auto grid = cg::this_grid();
 
-	// split the spilling nodes
-	// PRINT("split %i spilling nodes \n", *numSpillingNodes);
 	processRange(*numSpillingNodes, [&](int spillNodeIndex){
 		Node* spillingNode = spillingNodes[spillNodeIndex];
 
-		// create child nodes
 		uint32_t childOffset = atomicAdd(&stats->numNodes, 8);
 		for(int i = 0; i < 8; i++){
 
@@ -355,21 +279,19 @@ bool doSplitting(Node* nodes, Node** spillingNodes, uint32_t* numSpillingNodes){
 			child.countIteration = 0;
 			memcpy(&child.name[0], &spillingNode->name[0], 20);
 			child.name[child.level] = i + '0';
-			// child.voxels = Array<Point>();
 			child.numVoxels = 0;
 			child.numVoxelsStored = 0;
-			
+
 			nodes[childOffset + i] = child;
 
 			spillingNode->children[i] = &nodes[childOffset + i];
 		}
 
-		// return chunks to chunkQueue
 		Chunk* chunk = spillingNode->points;
 		while(chunk != nullptr){
-			
+
 			Chunk* next = chunk->next;
-			
+
 			chunk->next = nullptr;
 			int32_t oldIndex = atomicAdd(&stats->numAllocatedChunks, -1);
 			int32_t newIndex = oldIndex - 1;
@@ -381,7 +303,6 @@ bool doSplitting(Node* nodes, Node** spillingNodes, uint32_t* numSpillingNodes){
 		spillingNode->numPoints = 0;
 		spillingNode->points = nullptr;
 
-		// allocate occupancy grid for the spilled node
 		if(spillingNode->grid == nullptr){
 			spillingNode->grid = (OccupancyGrid*)allocator_persistent->alloc(sizeof(OccupancyGrid));
 		}
@@ -389,10 +310,7 @@ bool doSplitting(Node* nodes, Node** spillingNodes, uint32_t* numSpillingNodes){
 
 	grid.sync();
 
-	// clear the newly allocated occupancy grids
 	uint32_t numElements = *numSpillingNodes * (GRID_NUM_CELLS / 32u);
-	// numElements = 1;
-	// PRINT("clear new occupancy grids, %u elements \n", numElements);
 	grid.sync();
 	processRange(numElements, [&](int cellIndex){
 		int gridIndex = cellIndex / (GRID_NUM_CELLS / 32u);
@@ -405,9 +323,9 @@ bool doSplitting(Node* nodes, Node** spillingNodes, uint32_t* numSpillingNodes){
 }
 
 void expand(
-	Node* root, Point* points, int numPoints, 
+	Node* root, Point* points, int numPoints,
 	float3 octreeMin, float3 octreeMax, float octreeSize,
-	Node* nodes, 
+	Node* nodes,
 	Node** spillingNodes, uint32_t* numSpillingNodes,
 	Point* spilledPoints, uint32_t* numSpilledPoints,
 	uint32_t batchIndex
@@ -417,10 +335,10 @@ void expand(
 
 		grid.sync();
 
-		bool isFinished = doCounting(root, points, numPoints, 
+		bool isFinished = doCounting(root, points, numPoints,
 			octreeMin, octreeMax, octreeSize,
-			nodes, 
-			spillingNodes, numSpillingNodes, 
+			nodes,
+			spillingNodes, numSpillingNodes,
 			spilledPoints, numSpilledPoints,
 			batchIndex + 1);
 
@@ -437,7 +355,7 @@ void expand(
 }
 
 void voxelSampling(
-	Node* root, Point* points, int numPoints, 
+	Node* root, Point* points, int numPoints,
 	float3 octreeMin, float3 octreeMax, float octreeSize,
 	Point* spilledPoints, uint32_t* numSpilledPoints
 ){
@@ -447,12 +365,10 @@ void voxelSampling(
 
 	auto traverse = [&](Point point){
 
-		// node coordinate at MAX_DEPTH
 		uint32_t X = fGridSize * (point.x - octreeMin.x) / octreeSize;
 		uint32_t Y = fGridSize * (point.y - octreeMin.y) / octreeSize;
 		uint32_t Z = fGridSize * (point.z - octreeMin.z) / octreeSize;
 
-		// integer point coordinate relative to root node
 		uint32_t pX = MAX_DEPTH_GRIDSIZE * (point.x - octreeMin.x) / octreeSize;
 		uint32_t pY = MAX_DEPTH_GRIDSIZE * (point.y - octreeMin.y) / octreeSize;
 		uint32_t pZ = MAX_DEPTH_GRIDSIZE * (point.z - octreeMin.z) / octreeSize;
@@ -483,7 +399,6 @@ void voxelSampling(
 			sampleVoxel(current, pX, pY, pZ, point, octreeMin, octreeMax, octreeSize);
 
 			if(current->children[childIndex] == nullptr){
-				// current == leaf!
 				break;
 			}else{
 				current = current->children[childIndex];
@@ -516,7 +431,7 @@ void allocatePointChunks(Node* root, Point* points, int numPoints, Node* nodes){
 			int numRequiredChunks = (node->counter + POINTS_PER_CHUNK - 1) / POINTS_PER_CHUNK;
 			int numExistingChunks = (node->numPoints + POINTS_PER_CHUNK - 1) / POINTS_PER_CHUNK;
 			int numAdditionallyRequiredChunks = numRequiredChunks - numExistingChunks;
-			
+
 			if(numAdditionallyRequiredChunks > 0){
 
 				Chunk* prevChunk = node->points;
@@ -529,10 +444,8 @@ void allocatePointChunks(Node* root, Point* points, int numPoints, Node* nodes){
 					Chunk* chunk = nullptr;
 
 					if(chunkIndex >= stats->chunkPoolSize){
-						// allocate a new chunk if chunk pool is too small
 						chunk = (Chunk*)allocator_persistent->alloc(sizeof(Chunk));
 					}else{
-						// otherwise take from chunk pool
 						chunk = chunkQueue[chunkIndex];
 					}
 
@@ -546,14 +459,13 @@ void allocatePointChunks(Node* root, Point* points, int numPoints, Node* nodes){
 						prevChunk = chunk;
 					}
 				}
-				
+
 			}
 		}
 	});
 
 	grid.sync();
 
-	// raise chunk pool size counter if we allocated new chunks
 	if(grid.thread_rank() == 0){
 		stats->chunkPoolSize = max(stats->chunkPoolSize, stats->numAllocatedChunks);
 	}
@@ -567,20 +479,15 @@ void insertPoints(
 ){
 	auto grid = cg::this_grid();
 
-	// INSERT POINTS INTO NODES 
-	// PRINT("insert points into nodes \n");
 	float fGridSize = pow(2.0f, float(MAX_DEPTH));
-	// float3 octreeSize = octreeMax - octreeMin;
-	
+
 	auto insertPoint = [&](Point point){
-		// node coordinate at MAX_DEPTH
 		uint32_t X = fGridSize * (point.x - octreeMin.x) / octreeSize;
 		uint32_t Y = fGridSize * (point.y - octreeMin.y) / octreeSize;
 		uint32_t Z = fGridSize * (point.z - octreeMin.z) / octreeSize;
 
 		Node* current = root;
 
-		// traverse to leaf node, compute some data about it
 		int level = 0;
 		uint32_t level_X;
 		uint32_t level_Y;
@@ -603,7 +510,6 @@ void insertPoints(
 			childIndex = (child_X << 2) | (child_Y << 1) | child_Z;
 
 			if(current->children[childIndex] == nullptr){
-				// current == leaf!
 				break;
 			}else{
 				current = current->children[childIndex];
@@ -619,7 +525,6 @@ void insertPoints(
 		Chunk* chunk = leaf->points;
 
 		if(chunk == nullptr){
-			// printf("chunk is NULL: %s \n", leaf->name);
 			cudaprint->print("chunk is NULL: {} \n", (const char*)leaf->name);
 
 			return;
@@ -634,17 +539,14 @@ void insertPoints(
 		chunk->points[pointInChunkIndex] = point;
 	};
 
-	// INSERT POINTS FROM CURRENT BATCH
 	processRange(numPoints, [&](int pointID){
 		Point point = points[pointID];
-		
+
 		insertPoint(point);
 	});
 
 	grid.sync();
 
-	// INSERT POINTS FROM SPILLED NODES
-	// (essentially redistributing from spilled to new leaves)
 	processRange(*numSpilledPoints, [&](int pointID){
 
 		if(pointID > 3'000'000){
@@ -696,10 +598,6 @@ void allocateVoxelChunks(Node* nodes){
 void insertVoxels(int batchIndex){
 	auto grid = cg::this_grid();
 
-	// if(grid.thread_rank() == 0 && (*numBacklogVoxels) > 1'000'000){
-	// 	printf("numBacklogVoxels: %.1f M\n", float(*numBacklogVoxels) / 1'000'000.0f);
-	// }
-
 	processRange(*numBacklogVoxels, [&](int index){
 		Point voxel = backlog_voxels[index];
 		Node* target = backlog_targets[index];
@@ -723,7 +621,7 @@ void addBatch(
 	Point* points, uint32_t batchSize,
 	int batchIndex,
 	float3 octreeMin, float3 octreeMax, float octreeSize,
-	Node* nodes, 
+	Node* nodes,
 	Node** spillingNodes, uint32_t* numSpillingNodes,
 	Point* spilledPoints, uint32_t* numSpilledPoints
 ){
@@ -744,11 +642,10 @@ void addBatch(
 
 	auto t_10 = nanotime();
 
-	// EXPAND OCTREE
-	expand(root, points, batchSize, 
+	expand(root, points, batchSize,
 		octreeMin, octreeMax, octreeSize,
-		nodes, 
-		spillingNodes, numSpillingNodes, 
+		nodes,
+		spillingNodes, numSpillingNodes,
 		spilledPoints, numSpilledPoints,
 		batchIndex
 	);
@@ -757,8 +654,7 @@ void addBatch(
 
 	auto t_20 = nanotime();
 
-	// CREATE VOXEL SAMPLES
-	voxelSampling(root, points, batchSize, 
+	voxelSampling(root, points, batchSize,
 		octreeMin, octreeMax, octreeSize,
 		spilledPoints, numSpilledPoints
 	);
@@ -767,21 +663,18 @@ void addBatch(
 
 	auto t_30 = nanotime();
 
-	// ALLOCATE MEMORY FOR POINTS IN LEAF NODES
 	allocatePointChunks(root, points, batchSize, nodes);
 
 	grid.sync();
 
 	auto t_40 = nanotime();
 
-	// ALLOCATE VOXEL MEMORY FOR EACH NODE
 	allocateVoxelChunks(nodes);
 
 	grid.sync();
 
 	auto t_50 = nanotime();
 
-	// INSERT POINTS INTO LEAF NODES
 	insertPoints(root, points, batchSize,
 		octreeMin, octreeMax, octreeSize,
 		spilledPoints, numSpilledPoints, batchIndex
@@ -791,7 +684,6 @@ void addBatch(
 
 	auto t_60 = nanotime();
 
-	// PRINT("insertVoxels()\n");
 	insertVoxels(batchIndex);
 
 	grid.sync();
@@ -810,7 +702,7 @@ void addBatch(
 		float t_50_60 = double(t_60 - t_50) / 1'000'000.0;
 		float t_60_70 = double(t_70 - t_60) / 1'000'000.0;
 
-		cudaprint->print("t_00_70: {:.3f}, t_00_10: {:.3f}, expand: {:.3f}, createVoxels: {:.3f}, t_30_40: {:.3f}, t_40_50: {:.3f}, insertPoints: {:.3f}, t_60_70: {:.3f} \n", 
+		cudaprint->print("t_00_70: {:.3f}, t_00_10: {:.3f}, expand: {:.3f}, createVoxels: {:.3f}, t_30_40: {:.3f}, t_40_50: {:.3f}, insertPoints: {:.3f}, t_60_70: {:.3f} \n",
 			t_00_70,
 			t_00_10,
 			t_10_20,
@@ -833,7 +725,7 @@ void kernel_construct(
 	Stats* _stats,
 	uint64_t* frameStartTimestamp,
 	CudaPrint* _cudaprint,
-	uint32_t* _numBatchesUploaded_volatile, // could change at any moment by the parallel upload stream
+	uint32_t* _numBatchesUploaded_volatile,
 	uint32_t* batchSizes
 ){
 	auto grid = cg::this_grid();
@@ -857,21 +749,15 @@ void kernel_construct(
 
 	grid.sync();
 
-	// ALLOCATE STUFF
 	uint64_t& ellapsed_nanos     = *allocator->alloc<uint64_t*>(8);
 
-	// memory for "backlog"
 	backlog_voxels     = allocator->alloc<Point*>(VOXEL_BACKLOG_CAPACITY * sizeof(Point));
 	backlog_targets    = allocator->alloc<Node**>(VOXEL_BACKLOG_CAPACITY * sizeof(Node*));
 	numBacklogVoxels   = allocator->alloc<uint32_t*>(4);
 
-	// List of nodes that received too many points and ned to be split
 	Node** spillingNodes         =  allocator->alloc<Node**>(100'000 * sizeof(Node*));
 	uint32_t* numSpillingNodes   =  allocator->alloc<uint32_t*>(4);
 
-	// Points from spilled&split nodes that need to be redistributed to the new leaves
-	// It's quite large because in the worst case, a single point can trigger 
-	// <MAX_POINTS_PER_NODE> points to be spilled
 	Point* spilledPoints = allocator->alloc<Point*>(10'000'000 * sizeof(Point));
 	uint32_t* numSpilledPoints = allocator->alloc<uint32_t*>(4);
 
@@ -889,8 +775,6 @@ void kernel_construct(
 
 	grid.sync();
 
-	// We need to make sure that all threads get the same "numBatchesUploaded" value.
-	// _numBatchesUploaded_volatile is likely not safe and may be modified at any time by the parallel async upload stream.
 	if(grid.thread_rank() == 0){
 		numBatchesUploaded_global = *_numBatchesUploaded_volatile;
 	}
@@ -907,10 +791,9 @@ void kernel_construct(
 	uint32_t lastBatch = firstBatch + numBatches;
 
 	auto tStart_addBatches = nanotime();
-	
-	// ADD BATCHES OF POINTS TO OCTREE
+
 	for(int batchIndex = firstBatch; batchIndex < lastBatch; batchIndex++){
-		
+
 		uint32_t ringSlotIndex = batchIndex % BATCH_STREAM_SIZE;
 		uint32_t batchSize = batchSizes[ringSlotIndex];
 		Point* sub_points = points + ringSlotIndex * MAX_BATCH_SIZE;
@@ -937,11 +820,11 @@ void kernel_construct(
 			sub_points, batchSize,
 			stats->batchletIndex,
 			octreeMin, octreeMax, octreeSize,
-			nodes, 
+			nodes,
 			spillingNodes, numSpillingNodes,
 			spilledPoints, numSpilledPoints
 		);
-		
+
 		grid.sync();
 
 		if(grid.thread_rank() == 0){
@@ -957,15 +840,8 @@ void kernel_construct(
 
 		grid.sync();
 
-		// skip remaining batches if time budget is exceeded
 		float ellapsed_ms = float(ellapsed_nanos) / 1'000'000.0f;
 		if(ellapsed_ms > MAX_PROCESSING_TIME){
-			// if(grid.thread_rank() == 0){
-			// 	uint32_t numBatchesAdded = batchIndex - firstBatch;
-			// 	printf("%2u / %2u batches processed this frame. stopping early after %.1f ms. \n",
-			// 		numBatchesAdded, numBatches, ellapsed_ms
-			// 	);
-			// }
 
 			break;
 		}
@@ -976,7 +852,6 @@ void kernel_construct(
 
 	grid.sync();
 
-	// compute stats about the octree
 	uint32_t* counter_inner           = allocator->alloc<uint32_t*>(4);
 	uint32_t* counter_leaves          = allocator->alloc<uint32_t*>(4);
 	uint32_t* counter_nonempty_leaves = allocator->alloc<uint32_t*>(4);
@@ -1030,4 +905,3 @@ void kernel_construct(
 		stats->frameID                   = uniforms.frameCounter;
 	}
 }
-

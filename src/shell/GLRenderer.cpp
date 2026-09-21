@@ -1,7 +1,6 @@
 #include "shell/GLRenderer.h"
 
 #include <GL/glew.h>
-// glfw3 must follow glew.
 #include <GLFW/glfw3.h>
 
 #include <cstdio>
@@ -21,19 +20,15 @@ void glfwErrorCallback(int code, const char* description) {
 	fprintf(stderr, "remobench: glfw error %d: %s\n", code, description);
 }
 
-void APIENTRY glDebugCallback(GLenum /*source*/, GLenum type, GLuint /*id*/,
-                              GLenum severity, GLsizei /*length*/,
-                              const GLchar* message, const void* /*user*/) {
+void APIENTRY glDebugCallback(GLenum, GLenum type, GLuint,
+                              GLenum severity, GLsizei,
+                              const GLchar* message, const void*) {
 	if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) return;
 	fprintf(stderr, "remobench: GL %s: %s\n",
 	        type == GL_DEBUG_TYPE_ERROR ? "error" : "message", message);
 }
 
-}  // namespace
-
-// ---------------------------------------------------------------------------
-// Framebuffer
-// ---------------------------------------------------------------------------
+}
 
 Framebuffer::~Framebuffer() { destroy(); }
 
@@ -55,8 +50,6 @@ bool Framebuffer::setSize(int width, int height) {
 
 	glCreateFramebuffers(1, &m_fbo);
 
-	// RGBA8 because that is what CUDA writes with surf2Dwrite from the render
-	// kernels.
 	glCreateTextures(GL_TEXTURE_2D, 1, &m_colorTexture);
 	glTextureStorage2D(m_colorTexture, 1, GL_RGBA8, width, height);
 	glTextureParameteri(m_colorTexture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -71,10 +64,6 @@ bool Framebuffer::setSize(int width, int height) {
 	return true;
 }
 
-// ---------------------------------------------------------------------------
-// Camera
-// ---------------------------------------------------------------------------
-
 double Camera::fovyRad() const { return glm::radians(fovy); }
 
 void Camera::setSize(int w, int h) {
@@ -87,10 +76,6 @@ void Camera::update() {
 	const double aspect = double(width) / double(height);
 	proj = glm::perspective(fovyRad(), aspect, near, far);
 }
-
-// ---------------------------------------------------------------------------
-// GLRenderer
-// ---------------------------------------------------------------------------
 
 GLRenderer::GLRenderer() = default;
 
@@ -106,7 +91,6 @@ GLRenderer::~GLRenderer() {
 }
 
 GLRenderer* GLRenderer::from(GLFWwindow* window) {
-	// Instance travels through the window user pointer, not a file-scope static.
 	return static_cast<GLRenderer*>(glfwGetWindowUserPointer(window));
 }
 
@@ -119,9 +103,6 @@ bool GLRenderer::init(const std::string& title, int width, int height,
 		return false;
 	}
 
-	// Default to X11/XWayland. CUDA-GL interop with the proprietary driver has
-	// historically been fragile on native Wayland, and GLFW's drag-and-drop and
-	// cursor handling differ there too. Override with REMOBENCH_GLFW_PLATFORM=wayland.
 #ifdef GLFW_PLATFORM
 	const char* platform = std::getenv("REMOBENCH_GLFW_PLATFORM");
 	if (!platform || std::string(platform) == "x11") {
@@ -149,9 +130,7 @@ bool GLRenderer::init(const std::string& title, int width, int height,
 	glewExperimental = GL_TRUE;
 	const GLenum glewStatus = glewInit();
 	if (glewStatus != GLEW_OK) {
-		// GLEW_ERROR_NO_GLX_DISPLAY is expected and harmless under Wayland; glew
-		// still initialises the function pointers we need.
-		if (glewStatus != 4 /* GLEW_ERROR_NO_GLX_DISPLAY */) {
+		if (glewStatus != 4) {
 			if (err) {
 				*err = std::string("glewInit failed: ") +
 				       reinterpret_cast<const char*>(glewGetErrorString(glewStatus));
@@ -159,7 +138,6 @@ bool GLRenderer::init(const std::string& title, int width, int height,
 			return false;
 		}
 	}
-	// glewInit leaves a spurious GL_INVALID_ENUM on core profiles.
 	glGetError();
 
 	if (glDebugMessageCallback) {
@@ -208,8 +186,6 @@ bool GLRenderer::runFrame(const std::function<void()>& update,
 
 	glfwPollEvents();
 
-	// Drain the hot-reload queue on the MAIN thread. monitorFile's watcher threads
-	// only schedule work here, so a kernel recompile can never race the render loop.
 	EventQueue::instance->process();
 
 	const double t = now();
@@ -223,7 +199,6 @@ bool GLRenderer::runFrame(const std::function<void()>& update,
 
 	glfwGetFramebufferSize(m_window, &m_width, &m_height);
 	if (m_width == 0 || m_height == 0) {
-		// Minimised. Don't render into a zero-sized target.
 		return true;
 	}
 	m_camera.setSize(m_width, m_height);
@@ -268,10 +243,8 @@ void GLRenderer::blitToBackbuffer() {
 	}
 }
 
-// --- GLFW callbacks --------------------------------------------------------
-
-void GLRenderer::keyCallback(GLFWwindow* window, int key, int /*scancode*/,
-                             int action, int /*mods*/) {
+void GLRenderer::keyCallback(GLFWwindow* window, int key, int,
+                             int action, int) {
 	GLRenderer* self = from(window);
 	if (!self) return;
 	if (key >= 0 && key < Input::kNumKeys) {
@@ -282,7 +255,7 @@ void GLRenderer::keyCallback(GLFWwindow* window, int key, int /*scancode*/,
 }
 
 void GLRenderer::mouseButtonCallback(GLFWwindow* window, int button, int action,
-                                     int /*mods*/) {
+                                     int) {
 	GLRenderer* self = from(window);
 	if (!self) return;
 	const bool down = action == GLFW_PRESS;
@@ -301,7 +274,7 @@ void GLRenderer::cursorPosCallback(GLFWwindow* window, double x, double y) {
 	self->m_controls.onMouseMove(self->m_input, x, y);
 }
 
-void GLRenderer::scrollCallback(GLFWwindow* window, double /*dx*/, double dy) {
+void GLRenderer::scrollCallback(GLFWwindow* window, double, double dy) {
 	GLRenderer* self = from(window);
 	if (!self) return;
 	self->m_controls.onMouseScroll(self->m_input, dy);
@@ -317,4 +290,4 @@ void GLRenderer::dropCallback(GLFWwindow* window, int count,
 	for (auto& cb : self->m_dropCallbacks) cb(files);
 }
 
-}  // namespace remo
+}

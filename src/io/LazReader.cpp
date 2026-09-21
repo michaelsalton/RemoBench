@@ -1,22 +1,3 @@
-// LAZ decode. The only translation unit that touches laszip.
-//
-// Kept separate from LasReader.cpp for two reasons: laszip is this project's one
-// LGPL-2.1 dependency (THIRD_PARTY.md) and confining it to one file keeps that
-// boundary auditable; and laszip_api.h ends with a `using namespace std;` outside its
-// extern "C" block, which is not something to let into a shared header's blast radius.
-//
-// Decode is SEQUENTIAL, unlike the uncompressed path's eight loader threads. laszip
-// can seek (it keeps a chunk table, and CudaLOD's LasLoaderSparse does fan out that
-// way), but a seek into a file written as one chunk decodes from the beginning, so
-// N threads would cost N full decodes -- 350M points is exactly the size where that
-// stops being a slow load and becomes a hang. The honest fix is per-chunk parallel
-// decode, which needs the chunk table read up front; lazperf exposes it and laszip
-// does not, which is already noted in THIRD_PARTY.md as the reason to switch.
-//
-// So: measured ~5 MP/s here (36.2M points in 7.4 s, an RTX 5080 box with the file in
-// page cache), against ~110-140 MP/s for the same points as .las and ~100 MP/s as
-// .simlod. Never quote a throughput number measured through this reader.
-
 #include "io/LasReader.h"
 
 #include <cstdio>
@@ -28,8 +9,6 @@ namespace remo {
 
 namespace {
 
-// Print progress at most this often. A 350M-point file takes ~12 s to decode, and
-// silence for 12 s at startup reads as a hang.
 constexpr uint64_t kProgressStride = 10'000'000;
 
 std::string laszipError(laszip_POINTER reader) {
@@ -41,7 +20,7 @@ std::string laszipError(laszip_POINTER reader) {
 	return "laszip reported no detail";
 }
 
-}  // namespace
+}
 
 bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
                    const double translation[3], Point* out,
@@ -64,10 +43,6 @@ bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
 		return false;
 	};
 
-	// Ask for only the fields we store. This is a no-op for point formats 0-5, whose
-	// compressor is not layered, but formats 6-10 skip classification, intensity,
-	// GPS time and waveforms outright -- and those are the formats big modern scans
-	// arrive in.
 	laszip_decompress_selective(
 		reader, laszip_DECOMPRESS_SELECTIVE_Z | laszip_DECOMPRESS_SELECTIVE_RGB);
 
@@ -81,10 +56,6 @@ bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
 		return bail("laszip_get_point_pointer failed");
 	}
 
-	// Deliberately NOT taking scale/offset/count from laszip's own header struct: the
-	// uncompressed path takes them from our parse, and one cloud read two ways has to
-	// produce one tree. If the two ever disagree, that is a parse bug worth finding,
-	// not a difference to paper over by using a different source per path.
 	const double sx = info.scale[0], sy = info.scale[1], sz = info.scale[2];
 	const double ox = info.offset[0] + translation[0];
 	const double oy = info.offset[1] + translation[1];
@@ -106,8 +77,6 @@ bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
 		p.z = static_cast<float>(static_cast<double>(point->Z) * sz + oz);
 
 		if (hasRgb) {
-			// laszip_point::rgb is uint16[4] (the fourth entry is NIR); the packing
-			// heuristic is shared with the .las path on purpose.
 			const uint16_t rgb[3] = {point->rgb[0], point->rgb[1], point->rgb[2]};
 			p.color = packLasColor(rgb);
 		} else {
@@ -144,4 +113,4 @@ bool readLazPoints(const std::string& path, const LasHeaderInfo& info,
 	return true;
 }
 
-}  // namespace remo
+}

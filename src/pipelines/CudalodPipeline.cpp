@@ -13,29 +13,13 @@
 #include "remo/PointSource.h"
 #include "shell/TimingUi.h"
 
-// The pipeline's own host/device contract, vendored unmodified. Deliberately NOT merged
-// into remo/HostDeviceCommon.h: rewriting the struct the reference kernels read is how a
-// port silently stops reproducing its published numbers.
 #include "../../kernels/cudalod/common.h"
 
 namespace remo {
 namespace {
 
-// Bytes of device slab per input point.
-//
-// Not a guess. Measured watermarks for 36,200,706 points (see bench/reference/README.md):
-//   strategy 0 FIRST_COME             1.20 GB   ~33 B/pt
-//   strategy 2 AVERAGE_SINGLECELL     3.82 GB  ~106 B/pt
-//   strategy 3 WEIGHTED_NEIGHBORHOOD  3.82 GB  ~106 B/pt
-//
-// Sized for the WORST strategy, because switching strategy rebuilds and the device
-// allocator has no bounds check -- so a slab that only fits strategy 0 corrupts memory
-// the moment you press another button. Upstream's own rule of thumb (~28 B/pt) describes
-// only the default strategy and is why its 4GB default appeared to work.
 constexpr double kBytesPerPointSlab = 128.0;
 
-// Phase 1 allocates count+node grids for every level 0..8 as scratch: ~200MB regardless
-// of point count. A small cloud must still get that.
 constexpr uint64_t kMinSlabBytes = 512ull << 20;
 
 constexpr uint64_t kBytesPerPixelScratch = 64;
@@ -51,7 +35,7 @@ const char* strategyName(int s) {
 	}
 }
 
-}  // namespace
+}
 
 CudalodPipeline::CudalodPipeline(CudaContext& cuda) : m_cuda(cuda) {}
 CudalodPipeline::~CudalodPipeline() { release(); }
@@ -62,8 +46,6 @@ PipelineInfo CudalodPipeline::info() const {
 	info.displayName = "CudaLOD (batch)";
 	info.progressive = false;
 	info.needsWholeCloudResident = true;
-	// Slab + the resident input points the source holds. On a 16GB card this is what
-	// makes the 350M cloud correctly report as not fitting rather than crashing.
 	info.bytesPerPointEstimate = kBytesPerPointSlab + 16.0;
 	return info;
 }
@@ -90,9 +72,6 @@ bool CudalodPipeline::initPrograms(std::string* err) {
 		}
 	}
 
-	// Editing a construct kernel invalidates the tree it built, so rebuild on reload.
-	// Upstream SimLOD does not do this and leaves a tree built by the previous version of
-	// the code on screen, which is a confusing thing to debug.
 	m_buildProgram->onCompile([this] { m_rebuildRequested = true; });
 
 	return true;
@@ -109,7 +88,6 @@ bool CudalodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 		if (err) *err = "cloud is empty";
 		return false;
 	}
-	// The device side is uint32_t/int throughout, so refuse rather than wrap.
 	if (meta.numPoints > 0xFFFFFFFFull) {
 		if (err) {
 			*err = "CudaLOD's device code indexes points with 32-bit types; " +
@@ -118,8 +96,6 @@ bool CudalodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 		return false;
 	}
 
-	// Slab sized from the cloud, clamped to the budget minus what the resident input
-	// points already cost (the source owns those, but they come out of the same VRAM).
 	const uint64_t inputBytes = meta.numPoints * 16ull;
 	uint64_t want = static_cast<uint64_t>(kBytesPerPointSlab *
 	                                     static_cast<double>(meta.numPoints));
@@ -195,10 +171,6 @@ void CudalodPipeline::reset() {
 
 TimingScopes CudalodPipeline::timingScopes() const {
 	TimingScopes scopes;
-	// Kept as two scopes, not one total, because the paper reports them separately and
-	// because they scale very differently across strategies: split is flat at ~5 ms
-	// while voxelize spans 4 ms to 61 ms. A single "build" number would hide the only
-	// thing the strategy choice actually changes.
 	scopes.build = {"cudalod.split", "cudalod.voxelize"};
 	scopes.render = "cudalod.render";
 	return scopes;
@@ -208,15 +180,11 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 	if (!m_buildProgram || !m_buildProgram->ok()) return false;
 	if (!m_slab) return false;
 
-	// Batch pipeline: nothing to do until the whole cloud is on the device.
 	if (!source.isFullyResident()) return true;
 
 	if (m_built && !m_rebuildRequested) return false;
 	m_rebuildRequested = false;
 
-	// Repeated rebuilds at a FIXED strategy accumulate into one distribution on purpose
-	// -- press rebuild ten times and the median is worth more than any single run. Only
-	// a change that makes the samples describe different work clears them.
 	if (m_clearTimingRequested) {
 		m_clearTimingRequested = false;
 		if (frame.profiler) frame.profiler->clearPrefix("cudalod.");
@@ -234,7 +202,6 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 
 	State state = {};
 	state.metadata.numPoints = static_cast<uint32_t>(m_numPoints);
-	// Device-space bounds: the loader already translated so the minimum is the origin.
 	state.metadata.min_x = 0.0f;
 	state.metadata.min_y = 0.0f;
 	state.metadata.min_z = 0.0f;
@@ -246,8 +213,6 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 	state.LOD = frame.uniforms.lodScale;
 	std::memset(&state.transform, 0, sizeof(state.transform));
 
-	// Reset the arena watermark before phase 1, or a rebuild appends to the previous
-	// build's allocations and runs off the end of the slab.
 	REMO_CU(cuMemsetD8(m_allocOffset, 0, 8));
 	REMO_CU(cuMemsetD8(m_numNodes, 0, 4));
 
@@ -259,7 +224,6 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 	void* args[] = {&state, &slab,        &results,     &input,     &nodes,
 	                &numNodes, &sorted,   &allocOffset, &dbgPoints, &dbgLines};
 
-	// Phase 1: split. Grid from occupancy.
 	const int gridSplit = m_cuda.gridForKernel(kernel2, m_blockSize);
 	{
 		GpuScope scope(frame.profiler, "cudalod.split");
@@ -268,14 +232,6 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 		                                  args));
 	}
 
-	// Check for a dead context after EACH phase, not just at the end.
-	//
-	// Two reasons. It attributes the fault to a specific kernel, which a stack trace
-	// cannot do for device code. And it closes a race: once the context dies, the CUDA
-	// driver's teardown path corrupts the heap arenas that the file-watcher threads
-	// allocate on, so the process can die of "heap corruption in an unrelated thread"
-	// before a check placed only at the end is ever reached. That is precisely how this
-	// fault first presented, and it sent the investigation in the wrong direction.
 	{
 		const CUresult sync = cuCtxSynchronize();
 		if (isStickyError(sync)) {
@@ -284,9 +240,6 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 		REMO_CU(sync);
 	}
 
-	// Phase 2: voxelise. EXACTLY one block per SM -- the strategies allocate a
-	// per-block sampling grid from the slab, so more blocks would overrun it. This is
-	// upstream's constraint and it is load-bearing.
 	const int gridVoxelize = m_cuda.gridForKernel(kernel3, m_blockSize, 1);
 	{
 		GpuScope scope(frame.profiler, "cudalod.voxelize");
@@ -295,9 +248,6 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 		                                  0, args));
 	}
 
-	// Synchronise and check for a dead context BEFORE touching any result. A device
-	// fault here poisons everything downstream, so this is the only place it can be
-	// reported usefully.
 	{
 		const CUresult sync = cuCtxSynchronize();
 		if (isStickyError(sync)) {
@@ -310,7 +260,7 @@ bool CudalodPipeline::build(PointSource& source, const FrameContext& frame) {
 	readResults();
 
 	m_built = true;
-	return false;  // construction is complete in one shot
+	return false;
 }
 
 void CudalodPipeline::readResults() {
@@ -333,11 +283,8 @@ void CudalodPipeline::readResults() {
 		std::max(r.allocatedMemory_splitting, r.allocatedMemory_voxelization);
 	m_stats.bytesAllocated = m_slabBytes;
 
-	// The device allocator has no bounds check, so the watermark exceeding the slab is
-	// the only signal that it wrote outside it. Treat that as invalidating the run.
 	if (m_stats.bytesHighWater > m_slabBytes) m_stats.allocOverflow = true;
 
-	// MAX_NODES is a hard cap in methods_common.h.cu, also unchecked on device.
 	constexpr uint32_t kMaxNodes = 200'000;
 	if (m_stats.numNodes >= kMaxNodes) m_stats.nodeCapacityReached = true;
 
@@ -351,7 +298,6 @@ void CudalodPipeline::ensureScratch(int width, int height) {
 		static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
 	uint64_t needed = pixels * kBytesPerPixelScratch;
 	needed = std::max(needed, kMinScratchBytes);
-	// The render kernel also allocates a MAX_NODES visibility byte array.
 	needed += 256ull * 1024ull;
 	if (needed <= m_scratchBytes) return;
 
@@ -367,7 +313,7 @@ void CudalodPipeline::ensureScratch(int width, int height) {
 void CudalodPipeline::render(const FrameContext& frame) {
 	if (!m_renderProgram || !m_renderProgram->ok()) return;
 	if (frame.targets.surface == 0) return;
-	if (!m_built) return;  // nothing to draw yet; the shell clears the target
+	if (!m_built) return;
 
 	ensureScratch(frame.targets.width, frame.targets.height);
 	if (!m_scratch) return;
@@ -386,8 +332,6 @@ void CudalodPipeline::render(const FrameContext& frame) {
 
 	const int grid = m_cuda.gridForKernel(kernel, m_blockSize);
 	{
-		// As with SimLOD, this launch previously had no events on either side, so
-		// CudaLOD's render time was never measured at all.
 		GpuScope scope(frame.profiler, "cudalod.render");
 		REMO_CU(cuLaunchCooperativeKernel(kernel, static_cast<unsigned>(grid), 1, 1,
 		                                  static_cast<unsigned>(m_blockSize), 1, 1, 0, 0,
@@ -405,7 +349,6 @@ void CudalodPipeline::render(const FrameContext& frame) {
 	DeviceDiagnostics d = {};
 	if (cuMemcpyDtoH(&d, m_diagnostics, sizeof(DeviceDiagnostics)) == CUDA_SUCCESS) {
 		if (d.allocOverflow) m_stats.allocOverflow = true;
-		// Our render kernel owns selection, so these come from it.
 		m_stats.numVisibleNodes = d.drawItems;
 		m_stats.numVisiblePoints = d.drawSamples;
 	}
@@ -417,19 +360,12 @@ void CudalodPipeline::gui(const GpuProfiler& profiler) {
 		"split (kernel2) and voxelise (kernel3) build the tree in one shot.");
 	ImGui::Separator();
 
-	// The sampling strategy is genuinely pipeline-owned, so it lives here rather than in
-	// the shared panel. Upstream puts these four buttons in its RENDERER
-	// (Renderer.cpp:546-609), which is what has to be undone to make anything swappable.
 	ImGui::TextUnformatted("sampling strategy");
 	const int previous = m_strategy;
 	for (int s = 0; s <= 3; ++s) {
 		if (ImGui::RadioButton(strategyName(s), m_strategy == s)) m_strategy = s;
 	}
 	if (m_strategy != previous) {
-		// Changing strategy rebuilds the whole tree. Worth knowing that it is not free
-		// and not equivalent: WEIGHTED_NEIGHBORHOOD voxelises ~13x slower than
-		// FIRST_COME for bit-identical tree structure. That is also why the timing
-		// samples are dropped -- a median pooled across two strategies describes neither.
 		m_rebuildRequested = true;
 		m_clearTimingRequested = true;
 	}
@@ -447,10 +383,6 @@ void CudalodPipeline::gui(const GpuProfiler& profiler) {
 		timingRow(profiler, "voxelize (ms)", "cudalod.voxelize");
 		timingRow(profiler, "render (ms)", "cudalod.render");
 
-		// Throughput derives from the MEDIAN of one build, not the sum over rebuilds:
-		// the cloud is voxelised once per build, so summing ten rebuilds would divide
-		// 36M points by ten builds' worth of time. SimLOD's row is the opposite case and
-		// correctly uses the total, since there the launches partition one ingest.
 		const ScopeStats* split = profiler.find("cudalod.split");
 		const ScopeStats* voxelize = profiler.find("cudalod.voxelize");
 		const double buildMedian = (split ? split->median() : 0.0) +
@@ -474,4 +406,4 @@ void CudalodPipeline::gui(const GpuProfiler& profiler) {
 	}
 }
 
-}  // namespace remo
+}

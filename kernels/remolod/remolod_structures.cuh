@@ -1,46 +1,16 @@
-// RemoLOD's fork of SimLOD's structures.cuh.
-//
-// FORKED, NOT VENDORED. RemoLOD is RemoBench's own pipeline and this file is ours to change;
-// bench/check_vendored.sh does not police it, and it is NOT expected to stay identical to
-// external/SimLOD. The comparison baseline lives in kernels/simlod/ and stays byte-identical
-// -- that is the whole point of the split. Never "fix" one by editing the other.
-//
 // Derived from SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647, MIT,
 // Copyright 2023 Markus Schuetz and Lukas Herzberger (see THIRD_PARTY.md).
-//
-// Node / Chunk / OccupancyGrid, and the tunables RemoLOD raises.
 
 #pragma once
 
 constexpr float PI = 3.1415;
-// constexpr int MAX_POINTS_PER_NODE = 100;
-// constexpr int MAX_POINTS_PER_NODE = 5'000;
-// constexpr uint32_t POINTS_PER_CHUNK = 1000;
 constexpr bool RIGHTSIDE_BOXES = false;
 constexpr bool RIGHTSIDE_NODECOLORS = false;
 
 constexpr bool ENABLE_TRACE = false;
-// constexpr int MAX_DEPTH = 20;
-// constexpr float MAX_DEPTH_GRIDSIZE = 268'435'456.0f;
-
-// constexpr int MAX_POINTS_PER_NODE       = 5'000;
-// constexpr uint32_t POINTS_PER_CHUNK     = 256;
-// constexpr uint32_t GRID_SIZE            = 64;
-// constexpr uint32_t GRID_NUM_CELLS       = GRID_SIZE * GRID_SIZE * GRID_SIZE;
-// constexpr int MAX_DEPTH                 = 17;
-// constexpr float MAX_DEPTH_GRIDSIZE      = 16'777'216.0f;
 
 constexpr int MAX_POINTS_PER_NODE    = 50'000;
 
-// ADDED (SimLOD has no such constant).
-//
-// Upstream grows its flat Node pool with `atomicAdd(&stats->numNodes, 8)` and NO capacity
-// check anywhere, so an eagerly splitting tree walks off the end of the allocation. This is
-// the size the host allocates the pool to, so every pass can clamp against it and the host
-// can report nodeCapacityReached instead of corrupting memory.
-//
-// It matters more for RemoLOD than for SimLOD: Refinement's whole job is to split more
-// eagerly where geometry warrants it, which walks toward this bound on purpose.
 constexpr uint32_t MAX_NODES_CAPACITY = 200'000;
 constexpr uint32_t POINTS_PER_CHUNK  = 1000;
 constexpr uint32_t GRID_SIZE         = 128;
@@ -48,20 +18,6 @@ constexpr uint32_t GRID_NUM_CELLS    = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 constexpr int MAX_DEPTH              = 20;
 constexpr float MAX_DEPTH_GRIDSIZE   = 268'435'456.0f;
 
-// CHANGED FROM SimLOD (was 50).
-//
-// kernel_construct addresses batch N at points + (N % BATCH_STREAM_SIZE) * MAX_BATCH_SIZE --
-// a ring of this many 1M-point slots. RemoBench feeds the whole cloud already resident in
-// device memory, where batch N lives at points + N * MAX_BATCH_SIZE with NO wrapping. Those
-// two agree only while N < BATCH_STREAM_SIZE, so at 50 anything past 50M points silently
-// re-read slot 0 and built a tree from the wrong points.
-//
-// Raising it makes the non-wrapping addressing exact for any realistic cloud. It is used in
-// exactly two places -- that modulo and a clearing loop in remolod_reset.cu -- so it changes
-// no algorithm; it only costs a larger batchSizes array (4 bytes per slot).
-//
-// SimLOD itself keeps upstream's 50 and SimlodPipeline refuses a cloud it cannot address.
-// Revert this to 50 once PointSource grows a genuinely wrapping ring.
 constexpr uint64_t BATCH_STREAM_SIZE = 8192;
 
 struct Point{
@@ -104,14 +60,12 @@ struct Chunk{
 };
 
 struct OccupancyGrid{
-	// gridsize^3 occupancy grid; 1 bit per voxel
 	uint32_t values[GRID_NUM_CELLS / 32u];
 };
 
 struct Node{
 	Node* children[8];
 	uint32_t counter = 0;
-	// uint32_t counters[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 	uint32_t numPoints = 0;
 	uint32_t level = 0;
@@ -127,16 +81,12 @@ struct Node{
 	bool isLarge = false;
 
 	OccupancyGrid* grid = nullptr;
-	
+
 	Chunk* points = nullptr;
 	Chunk* voxelChunks = nullptr;
 
 	uint32_t numVoxels = 0;
 	uint32_t numVoxelsStored = 0;
-
-	// bool spilled(){
-	// 	return counter > MAX_POINTS_PER_NODE;
-	// }
 
 	bool isLeafFn(){
 
@@ -180,10 +130,6 @@ struct Node{
 
 };
 
-// Guards kernels/remolod/remolod_layout.h, which the HOST uses to size the node pool and the
-// accumulator side array, because this header is not host-compilable (Node's methods call
-// dot() from helper_math.h). Drift becomes a compile error in the kernel -- which
-// --check-kernels catches without a GPU -- rather than a silently mis-sized allocation.
 #ifdef __CUDACC_RTC__
 #include "remolod_layout.h"
 static_assert(sizeof(Node) == remo::remolod::kNodeBytes,

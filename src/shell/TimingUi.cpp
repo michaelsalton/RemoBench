@@ -14,9 +14,6 @@ void emit(const char* label, const ScopeStats* stats) {
 	ImGui::TableNextColumn();
 
 	if (!stats || stats->empty()) {
-		// Deliberately not "0.00 ms". A scope with no samples means nothing measured it,
-		// which is a different fact from a kernel that took no time, and conflating the
-		// two is the defect this whole layer was written to remove.
 		ImGui::TextDisabled("not measured");
 		return;
 	}
@@ -26,7 +23,7 @@ void emit(const char* label, const ScopeStats* stats) {
 	            static_cast<unsigned long long>(stats->count()));
 }
 
-}  // namespace
+}
 
 void timingRow(const GpuProfiler& profiler, const char* label,
                const std::string& scope) {
@@ -35,4 +32,4 @@ void timingRow(const GpuProfiler& profiler, const char* label,
 
 void timingRow(const char* label, const ScopeStats& stats) { emit(label, &stats); }
 
-}  // namespace remo
+}

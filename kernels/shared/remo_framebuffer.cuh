@@ -1,29 +1,6 @@
 // Adapted from SimLOD: modules/progressive_octree/render.cu
 // Upstream: https://github.com/m-schuetz/SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647
 // Copyright 2023 Markus Schuetz and Lukas Herzberger -- MIT (see THIRD_PARTY.md)
-//
-// The shared software framebuffer: one uint64 per pixel, packing
-// (float depth << 32) | rgba, depth-tested with a single 64-bit atomicMin.
-//
-// DO NOT "SIMPLIFY" THIS INTO SEPARATE DEPTH AND COLOUR BUFFERS. The packing is
-// load-bearing: one atomic resolves both the depth test and the colour write, so
-// splitting them doubles atomic traffic on the hottest path in the renderer and
-// introduces a race between the two writes. It is a large part of why upstream hits
-// the throughput it does.
-//
-// Why the trick works: for non-negative IEEE-754 floats, the bit pattern compares
-// in the same order as the value. Depth goes in the high 32 bits, so an unsigned
-// 64-bit atomicMin picks the nearest fragment and carries its colour along for
-// free. Negative depths would break the ordering, which is why remoProject rejects
-// anything with w <= 0 rather than clamping it.
-//
-// This file is shared by every pipeline, which is the point. Feeding two different
-// LOD structures to the SAME rasteriser is what makes an image difference
-// attributable to the LOD algorithm. Upstream cannot do that: SimLOD's renderer
-// uses this packed uint64 with a divide-by-count resolve, CudaLOD's uses a uint32
-// depth buffer plus a separate 16 byte/pixel accumulator with a Gaussian 3x3 splat
-// resolve. Those produce visibly different images for reasons that have nothing to
-// do with LOD quality.
 
 #pragma once
 
@@ -31,8 +8,6 @@
 
 namespace remo {
 
-// Depth = +inf, colour = a dark background. Matches upstream's sentinel so that
-// "was anything drawn here" tests behave identically.
 constexpr uint64_t REMO_FB_CLEAR = 0x7f800000'00332211ull;
 
 inline uint32_t remoFbColor(uint64_t pixel) {
@@ -49,14 +24,12 @@ inline uint64_t remoFbPack(float depth, uint32_t color) {
 	return (bits << 32) | static_cast<uint64_t>(color);
 }
 
-// Grid-wide clear. Caller must grid.sync() afterwards before rasterising.
 inline void remoClearFramebuffer(uint64_t* fb, const SharedUniforms& u) {
 	const uint64_t numPixels =
 		static_cast<uint64_t>(u.width) * static_cast<uint64_t>(u.height);
 	processRangeStrided(numPixels, [&](uint64_t i) { fb[i] = REMO_FB_CLEAR; });
 }
 
-// Splat one sample as a pointSize x pointSize square.
 inline void remoDrawPoint(uint64_t* fb, const SharedUniforms& u, float x, float y,
                           float z, uint32_t color) {
 	float px, py, depth;
@@ -68,8 +41,6 @@ inline void remoDrawPoint(uint64_t* fb, const SharedUniforms& u, float x, float 
 	const int32_t w = static_cast<int32_t>(u.width);
 	const int32_t h = static_cast<int32_t>(u.height);
 
-	// Cheap reject before the inner loop; a point well off-screen is the common case
-	// once the camera is inside a large cloud.
 	if (ix + half < 0 || iy + half < 0 || ix - half >= w || iy - half >= h) return;
 
 	const uint64_t packed = remoFbPack(depth, color);
@@ -89,7 +60,6 @@ inline void remoDrawPoint(uint64_t* fb, const SharedUniforms& u, float x, float 
 	}
 }
 
-// Resolve to the GL texture. 16x16 tiles, matching upstream.
 inline void remoResolve(uint64_t* fb, const SharedUniforms& u,
                         cudaSurfaceObject_t surface) {
 	const uint32_t width = static_cast<uint32_t>(u.width);
@@ -101,21 +71,10 @@ inline void remoResolve(uint64_t* fb, const SharedUniforms& u,
 		const uint32_t x = static_cast<uint32_t>(i % width);
 		const uint32_t y = static_cast<uint32_t>(i / width);
 		uint32_t color = remoFbColor(fb[i]);
-		// GL's origin is bottom-left; our y grows downward from the projection above.
 		surf2Dwrite(color, surface, static_cast<int>(x) * 4, static_cast<int>(y));
 	});
 }
 
-// ---------------------------------------------------------------------------
-// Eye-dome lighting.
-//
-// Unlike upstream, this ACTUALLY READS uniforms.enableEDL and
-// uniforms.edlStrength. SimLOD plumbs both into Uniforms and then hardcodes
-// strength to 0.4 inside the kernel (render.cu:1292) while ignoring the toggle
-// entirely, so two GUI controls silently do nothing. In a measurement tool that is
-// not a cosmetic bug -- it invalidates any experiment where someone believed they
-// had changed the shading.
-// ---------------------------------------------------------------------------
 inline void remoApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 	if (u.enableEDL == 0) return;
 
@@ -130,7 +89,7 @@ inline void remoApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 
 		const uint64_t pixel = fb[i];
 		const float depth = remoFbDepth(pixel);
-		if (!(depth < 3.0e38f)) return;  // nothing drawn here
+		if (!(depth < 3.0e38f)) return;
 
 		const float logDepth = __log2f(depth);
 		float response = 0.0f;
@@ -149,17 +108,8 @@ inline void remoApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 			++taps;
 		}
 		if (taps == 0) return;
-		response /= static_cast<float>(taps);  // a real mean; see below
+		response /= static_cast<float>(taps);
 
-		// Upstream writes exp(-response * 300 * 0.4), but its `response` is
-		// sum / 50 while only FOUR taps are ever summed (numSamples = 50 is left
-		// over from a discarded 50-direction version). So its effective scale is
-		// 300 * 0.4 * 4/50 ~= 9.6 per unit of mean response, not 120.
-		//
-		// Dividing by the real tap count above is the correct thing to do, so the
-		// constant here is chosen to land in the same visual range rather than
-		// inheriting a 12.5x-too-strong shading that crushes a sparse cloud to
-		// black speckle.
 		constexpr float kEdlScale = 24.0f;
 		const float shade = __expf(-response * kEdlScale * u.edlStrength);
 
@@ -171,4 +121,4 @@ inline void remoApplyEDL(uint64_t* fb, const SharedUniforms& u) {
 	});
 }
 
-}  // namespace remo
+}

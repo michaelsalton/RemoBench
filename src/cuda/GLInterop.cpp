@@ -11,7 +11,6 @@ GLInterop::~GLInterop() { unregister(); }
 
 void GLInterop::unregister() {
 	if (m_mapped) {
-		// Best-effort: leaving a resource mapped at teardown wedges the GL texture.
 		if (m_surface) cuSurfObjectDestroy(m_surface);
 		m_surface = 0;
 		cuGraphicsUnmapResources(1, &m_resource, nullptr);
@@ -29,7 +28,7 @@ bool GLInterop::bind(unsigned int glTexture, int width, int height,
                      std::string* err) {
 	if (glTexture == m_glTexture && width == m_width && height == m_height &&
 	    m_resource != nullptr) {
-		return true;  // already registered; this is the common path
+		return true;
 	}
 
 	unregister();
@@ -39,8 +38,6 @@ bool GLInterop::bind(unsigned int glTexture, int width, int height,
 		return false;
 	}
 
-	// WRITE_DISCARD: the kernel overwrites every pixel it cares about, so the
-	// driver need not preserve the previous contents.
 	const CUresult r = REMO_CU(cuGraphicsGLRegisterImage(
 		&m_resource, glTexture, GL_TEXTURE_2D,
 		CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD));
@@ -104,4 +101,4 @@ void GLInterop::unmap(CUstream stream) {
 	m_mapped = false;
 }
 
-}  // namespace remo
+}

@@ -1,15 +1,3 @@
-// CUDA driver-API error handling.
-//
-// Both research codebases have a `cu_checked` that cout's an error code and
-// carries on, which means a failed allocation or a bad launch surfaces later as
-// mysterious corruption instead of at the call site. Given that the GPU-side
-// allocators here have no bounds checks either, silent failure is the last thing
-// this project needs.
-//
-//   REMO_CU(expr)      -- log with file/line/name, return the CUresult
-//   REMO_CU_OK(expr)   -- as above, evaluates to true on success
-//   REMO_CU_FATAL(expr)-- log and abort; only for genuinely unrecoverable setup
-
 #pragma once
 
 #include <cstdio>
@@ -19,8 +7,6 @@
 
 namespace remo {
 
-// Driver error enum -> symbolic name. cuGetErrorName can itself fail (e.g. before
-// cuInit), so fall back to the numeric code rather than returning nullptr.
 inline const char* cuErrorName(CUresult result) {
 	const char* name = nullptr;
 	if (cuGetErrorName(result, &name) == CUDA_SUCCESS && name) return name;
@@ -51,15 +37,6 @@ inline CUresult cuCheckImpl(CUresult result, const char* expr, const char* file,
 	std::abort();
 }
 
-// A "sticky" error means the CUDA context is dead: a kernel made an illegal access, hit
-// an assert, or was aborted. Nothing after that point is recoverable without recreating
-// the context, and every subsequent driver call fails.
-//
-// This must be treated as terminal rather than logged and ignored. Carrying on produced,
-// in order: a screenful of identical errors from every later call, then host heap
-// corruption, then a SIGSEGV in an unrelated thread -- a debugging trail that points
-// nowhere near the actual fault. Failing at the first sticky error keeps the diagnosis
-// where the cause is.
 inline bool isStickyError(CUresult result) {
 	switch (result) {
 		case CUDA_ERROR_ILLEGAL_ADDRESS:
@@ -78,13 +55,9 @@ inline bool isStickyError(CUresult result) {
 	}
 }
 
-// Checks for a dead context and, if found, reports what was running and exits.
-//
-// `what` should name the pipeline and phase, because the fault is in device code and the
-// stack trace will not tell you which kernel it was.
 [[noreturn]] void reportDeadContextAndExit(CUresult result, const char* what);
 
-}  // namespace remo
+}
 
 #define REMO_CU(expr) ::remo::cuCheckImpl((expr), #expr, __FILE__, __LINE__)
 

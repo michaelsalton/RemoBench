@@ -32,9 +32,7 @@ void reportDeadContextAndExit(CUresult result, const char* what) {
 	        "  compute-sanitizer ./build/remobench <same arguments>\n",
 	        cuErrorName(result), what, cuErrorString(result));
 	fflush(stderr);
-	// _Exit, not exit: with a dead context, running static destructors invites the CUDA
-	// driver's own teardown to fail on top of the original error.
-	std::_Exit(70);  // EX_SOFTWARE
+	std::_Exit(70);
 }
 
-}  // namespace remo
+}

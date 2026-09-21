@@ -1,12 +1,3 @@
-// RemoBench -- a point cloud viewer with swappable LOD generation pipelines.
-//
-// Note the command line. Both upstream projects load a cloud ONLY by drag-and-drop
-// onto the window (SimLOD accepts no arguments at all; CudaLOD hardcodes the
-// author's Windows paths and the Linux port had to add an env var). That is a
-// liability for anything scripted -- a benchmark runner cannot drag a file -- so
-// --open exists from the first commit and drag-and-drop is the convenience, not the
-// mechanism.
-
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -24,27 +15,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// --check-kernels: NVRTC-compile and link kernel modules without opening a window.
-//
-// Highest value per line in the project. It turns "did I break a pipeline" into a
-// single command, needs no display, and is the thing that will catch a CUDA-toolkit
-// upgrade breaking the -default-device / cccl include setup. It is also the
-// compile-only spike used to find out whether a foreign kernel tree (CudaLOD's, whose
-// sources predate this option set) survives our compile flags at all -- worth knowing
-// before writing host code against the wrong assumption.
-//
-// With no paths, the programs to check are read from each pipeline's programs.txt, which
-// declares its link groups. Scanning for .cu files would be wrong: most of CudaLOD's are
-// #include fragments that are not independently compilable.
-//
-// With explicit paths, each is its own program unless asGroup links them all into one.
-// That distinction is not academic -- CudaLOD's kernel.cu and cudalod_render.cu reference
-// symbols defined in lib.cu, and checked alone they fail with unresolved externs that say
-// nothing about whether the code is compatible with our flags.
 int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
                  bool asGroup) {
-	// A CUDA context is required for nvJitLink to query the device architecture, but
-	// no GL context and no window are.
 	remo::CudaContext cuda;
 	printf("remobench: %s, sm_%d%d\n", cuda.deviceName().c_str(), cuda.ccMajor(),
 	       cuda.ccMinor());
@@ -60,12 +32,6 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 		}
 		moduleCount = explicitPaths.size();
 	} else {
-		// Discover programs from each pipeline's programs.txt.
-		//
-		// NOT by scanning for .cu files: most of CudaLOD's .cu files are #include
-		// fragments that are not independently compilable, so a blanket scan reports
-		// pages of errors about code that is perfectly fine in its intended context.
-		// See kernels/cudalod/programs.txt.
 		std::vector<fs::path> manifests;
 		std::error_code ec;
 		for (fs::recursive_directory_iterator it(remo::kernelRoot(), ec), end;
@@ -81,7 +47,6 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 			std::ifstream in(manifest);
 			std::string line;
 			while (std::getline(in, line)) {
-				// Strip comments and surrounding whitespace.
 				const size_t hash = line.find('#');
 				if (hash != std::string::npos) line.resize(hash);
 				std::istringstream ls(line);
@@ -120,20 +85,14 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 
 		remo::KernelProgramDesc desc;
 		desc.modules = group;
-		// No kernel names: this checks that the module COMPILES and LINKS, without
-		// assuming what its entry points are called. A module that links but whose
-		// entry point is misnamed is caught by the pipeline that uses it.
 		desc.kernels = {};
 		desc.linkMode = usePtx ? remo::LinkMode::Ptx : remo::LinkMode::LtoIr;
-		// No file watching: this is a one-shot check, not a session.
 		desc.watch = false;
 
 		remo::CudaModularProgram program(std::move(desc));
 		const bool ok = program.ok();
 		printf("%s  %s\n", ok ? "  ok  " : "FAILED", label.c_str());
 		if (!ok) {
-			// The error text is already on stderr from the compile; print it again
-			// compactly so a CI log reads top-to-bottom.
 			const std::string& err = program.lastError();
 			if (!err.empty()) printf("        %s\n", err.c_str());
 			++failures;
@@ -146,9 +105,6 @@ int checkKernels(const std::vector<std::string>& explicitPaths, bool usePtx,
 	return failures == 0 ? 0 : 1;
 }
 
-// Prints exactly what the dataset dropdown will show, without opening a window or a CUDA
-// context. Verifies the scan (and the .simlod point counts, which are derived from file
-// size) from a script.
 int listDatasets() {
 	std::string dir = "data";
 	if (const char* env = std::getenv("REMOBENCH_DATA_DIR")) {
@@ -217,8 +173,6 @@ void printUsage() {
 		"Files can also be dropped onto the window.\n");
 }
 
-// Returns false if the flag is missing its argument, so a typo is an error rather
-// than a silently ignored option.
 bool takeArg(int argc, char** argv, int& i, const char* flag, std::string* out) {
 	if (i + 1 >= argc) {
 		fprintf(stderr, "remobench: %s needs an argument\n", flag);
@@ -228,12 +182,11 @@ bool takeArg(int argc, char** argv, int& i, const char* flag, std::string* out) 
 	return true;
 }
 
-}  // namespace
+}
 
 int main(int argc, char** argv) {
 	remo::AppOptions options;
 
-	// --check-kernels short-circuits everything else: no window, no cloud.
 	bool checkMode = false;
 	bool checkPtx = false;
 	bool checkAsGroup = false;
@@ -294,9 +247,6 @@ int main(int argc, char** argv) {
 		} else if (arg == "--remolod-no-accum") {
 			options.remolodNoAccum = true;
 		} else if (!arg.empty() && arg[0] != '-') {
-			// Bare path: a cloud normally, or a kernel to check in --check-kernels
-			// mode. Note --check-kernels may appear after the path, so this is sorted
-			// out below rather than here.
 			options.files.push_back(arg);
 		} else {
 			fprintf(stderr, "remobench: unknown option '%s'\n", arg.c_str());
@@ -306,7 +256,6 @@ int main(int argc, char** argv) {
 	}
 
 	if (checkMode) {
-		// Bare paths and --open paths are both taken as kernels to check here.
 		checkPaths = options.files;
 		return checkKernels(checkPaths, checkPtx, checkAsGroup);
 	}
@@ -318,8 +267,5 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	// run() returns normally on window close. SimLOD's loop() calls
-	// exit(EXIT_SUCCESS) instead, which is why it has no shutdown path and could
-	// never host a headless benchmark or a GPU test.
 	return app.run();
 }

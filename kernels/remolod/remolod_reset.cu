@@ -1,19 +1,7 @@
-// RemoLOD's fork of SimLOD's reset.cu.
-//
-// FORKED, NOT VENDORED. RemoLOD is RemoBench's own pipeline and this file is ours to change;
-// bench/check_vendored.sh does not police it, and it is NOT expected to stay identical to
-// external/SimLOD. The comparison baseline lives in kernels/simlod/ and stays byte-identical
-// -- that is the whole point of the split. Never "fix" one by editing the other.
-//
 // Derived from SimLOD @ fa7891613c138bd41775ca72a47cd89e32a5a647, MIT,
 // Copyright 2023 Markus Schuetz and Lukas Herzberger (see THIRD_PARTY.md).
-//
-// Clears the octree and initialises the persistent allocator in place.
-//
-// It does NOT clear the accumulator side array -- that is RemoLOD's own state and is zeroed
-// by the host in RemolodPipeline::build, next to where it zeroes AccumGlobals.
 
-// Some code in this file, particularly frustum, ray and intersection tests, 
+// Some code in this file, particularly frustum, ray and intersection tests,
 // is adapted from three.js. Three.js is licensed under the MIT license
 // This file this follows the three.js licensing
 // License: MIT https://github.com/mrdoob/three.js/blob/dev/LICENSE
@@ -51,11 +39,11 @@ void kernel(
 	grid.sync();
 
 	Node* root = &nodes[0];
-		
+
 	if(grid.thread_rank() == 0){
-		
+
 		allocator_octree->buffer = buffer_octree;
-		allocator_octree->offset = 16; // 16-aligned, first 8 byte is allocator itself
+		allocator_octree->offset = 16;
 
 		*stats = Stats();
 
@@ -84,7 +72,7 @@ void kernel(
 		root->grid = (OccupancyGrid*)allocator_octree->alloc(sizeof(OccupancyGrid));
 
 		*_numBatchesUploaded_volatile = 0;
-		
+
 		for(int i = 0; i < BATCH_STREAM_SIZE; i++){
 			batchSizes[i] = 0;
 		}
@@ -92,11 +80,9 @@ void kernel(
 
 	grid.sync();
 
-	// clear occupancy grid
 	processRange((GRID_NUM_CELLS / 32u), [&](int index){
 		root->grid->values[index] = 0;
 	});
-	
+
 	grid.sync();
 }
-

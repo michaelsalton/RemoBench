@@ -11,10 +11,6 @@ const char* regimeName(Regime regime) {
 	return regime == Regime::Strict ? "strict" : "deferred";
 }
 
-// ---------------------------------------------------------------------------
-// ScopeStats
-// ---------------------------------------------------------------------------
-
 void ScopeStats::add(double ms) {
 	++m_n;
 	m_last = ms;
@@ -25,7 +21,6 @@ void ScopeStats::add(double ms) {
 		m_max = std::max(m_max, ms);
 	}
 
-	// Welford.
 	const double delta = ms - m_mean;
 	m_mean += delta / static_cast<double>(m_n);
 	m_m2 += delta * (ms - m_mean);
@@ -63,16 +58,11 @@ double ScopeStats::percentile(double p) const {
 		m_sortedDirty = false;
 	}
 	const double clamped = std::clamp(p, 0.0, 1.0);
-	// Nearest-rank: the smallest value at or above the p-th position.
 	size_t rank = static_cast<size_t>(std::ceil(clamped * static_cast<double>(m_sorted.size())));
 	if (rank == 0) rank = 1;
 	if (rank > m_sorted.size()) rank = m_sorted.size();
 	return m_sorted[rank - 1];
 }
-
-// ---------------------------------------------------------------------------
-// GpuProfiler
-// ---------------------------------------------------------------------------
 
 GpuProfiler::~GpuProfiler() { destroyEvents(); }
 
@@ -141,14 +131,10 @@ void GpuProfiler::beginFrame(uint64_t frameIndex, Regime regime, CUstream stream
 	m_regime = regime;
 	m_stream = stream;
 
-	// Anything the previous frames left outstanding, without stalling for it.
 	harvest(false);
 }
 
 void GpuProfiler::endFrame() {
-	// A scope left open across the frame boundary means an unbalanced begin/end, which
-	// GpuScope makes impossible -- but if it happens, drop it rather than leaking the
-	// pair and letting a stale start event pair up with a future end.
 	for (const Open& o : m_open) {
 		recycle(o.start, o.end);
 		++m_dropped;
@@ -171,9 +157,6 @@ int GpuProfiler::begin(const char* name) {
 	Open open;
 	open.scope = idx;
 	if (!acquireEvents(&open.start, &open.end)) {
-		// Still push, so begin/end stay balanced and nesting is tracked; just record no
-		// sample. Counted, because a silently missing sample is the failure this class
-		// exists to prevent.
 		++m_dropped;
 		open.start = open.end = nullptr;
 		m_open.push_back(open);
@@ -191,8 +174,6 @@ int GpuProfiler::begin(const char* name) {
 
 void GpuProfiler::end(int handle) {
 	if (handle < 0 || m_open.empty()) return;
-	// GpuScope guarantees LIFO. Anything else is a programming error; ignore it rather
-	// than mis-pairing events.
 	if (handle != static_cast<int>(m_open.size()) - 1) return;
 
 	const Open open = m_open.back();
@@ -223,8 +204,6 @@ void GpuProfiler::harvest(bool blocking) {
 			blocking ? cuEventSynchronize(p.end) : cuEventQuery(p.end);
 
 		if (status == CUDA_ERROR_NOT_READY) {
-			// Not finished. Leave it for the next pass -- this is the whole reason
-			// harvesting is non-blocking in the deferred regime.
 			m_pending[keep++] = p;
 			continue;
 		}
@@ -238,9 +217,6 @@ void GpuProfiler::harvest(bool blocking) {
 				++m_dropped;
 			}
 		} else {
-			// A real error (a dead context, most likely). The pipelines report and exit
-			// on a sticky error of their own; here the only sane thing is to drop the
-			// sample rather than record a fabricated one.
 			++m_dropped;
 		}
 
@@ -257,8 +233,6 @@ const ScopeStats* GpuProfiler::find(const std::string& name, Regime regime) cons
 	auto it = m_index.find(name);
 	if (it == m_index.end()) return nullptr;
 	const ScopeStats& stats = m_scopes[it->second].stats[static_cast<int>(regime)];
-	// A scope that exists but has no samples in THIS regime is reported as absent, so a
-	// caller cannot print a 0.00 that looks like a measurement.
 	if (stats.empty()) return nullptr;
 	return &stats;
 }
@@ -293,4 +267,4 @@ void GpuProfiler::clearPrefix(const std::string& prefix) {
 	}
 }
 
-}  // namespace remo
+}

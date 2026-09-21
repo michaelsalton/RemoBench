@@ -1,16 +1,4 @@
-// App::drawGui -- the shared settings panel and stats readout.
-//
-// Kept out of GLRenderer on purpose. CudaLOD bakes its GUI INTO the renderer
-// (src/Renderer.cpp:546-609 hardcodes the four sampling-strategy buttons and a LOD
-// slider), which means its renderer knows about one pipeline's tunables. That has to
-// be undone before anything is swappable.
-//
-// The split here is the one that keeps comparisons honest: this panel owns knobs
-// that apply to EVERY pipeline identically, and delegates to pipeline->gui() for
-// tunables a pipeline owns. Nothing pipeline-specific is allowed above that line.
-
 #include <imgui.h>
-// For PushItemFlag / ImGuiItemFlags_Disabled -- see the shims below.
 #include <imgui_internal.h>
 #include <implot.h>
 
@@ -24,16 +12,6 @@
 namespace remo {
 
 namespace {
-
-// --- ImGui 1.81 compatibility shims ---------------------------------------
-//
-// The vendored ImGui is 1.81 (2021) and is PINNED, because SimLOD's plotting code
-// requires a matching ImPlot -- it calls ImPlot::SetNextPlotLimitsX and a 3-argument
-// BeginPlot, both since removed. See THIRD_PARTY.md.
-//
-// SeparatorText arrived in 1.89.5 and BeginDisabled in 1.88, so both are open-coded
-// here. Keeping the shims in one place means the call sites read normally and
-// unpinning later is a matter of deleting this block.
 
 void sectionHeader(const char* label) {
 	ImGui::Spacing();
@@ -70,7 +48,7 @@ void statRowF(const char* label, const char* fmt, double value) {
 	ImGui::Text(fmt, value);
 }
 
-}  // namespace
+}
 
 void App::drawGui() {
 	ILodPipeline* pipeline = m_registry.active();
@@ -79,7 +57,6 @@ void App::drawGui() {
 	ImGui::SetNextWindowSize(ImVec2(400, 700), ImGuiCond_FirstUseEver);
 	ImGui::Begin("RemoBench");
 
-	// --- status ------------------------------------------------------------
 	if (!m_status.empty()) {
 		if (m_statusIsError) {
 			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "%s",
@@ -90,16 +67,10 @@ void App::drawGui() {
 		ImGui::Separator();
 	}
 
-	// Mean fps with the tail beside it. A mean alone is the wrong summary for a
-	// progressive builder: the whole point of the construction budget is that it bounds
-	// the hitch, and a hitch is invisible in an average.
 	ImGui::Text("%.1f fps  (%.2f ms, med %.2f, p95 %.2f)", m_renderer.fps(),
 	            m_renderer.frameMs(), m_frameTimeStats.median(),
 	            m_frameTimeStats.percentile(0.95));
 
-	// Exit on the same row, right-aligned. Escape already closes the window, but a
-	// keyboard-only shutdown is undiscoverable, and the loop is caller-owned
-	// (GLRenderer.h) precisely so there IS a clean shutdown path -- so expose it.
 	{
 		constexpr float kExitWidth = 56.0f;
 		ImGui::SameLine(ImGui::GetWindowContentRegionWidth() - kExitWidth);
@@ -129,11 +100,8 @@ void App::drawGui() {
 		}
 	}
 
-	// --- dataset ------------------------------------------------------------
 	sectionHeader("Dataset");
 	{
-		// Scanned lazily and cached: a recursive walk of data/ every frame would be
-		// pointless IO, and the directory holds multi-GB files.
 		if (!m_datasetsScanned) scanDatasets();
 
 		std::string preview;
@@ -150,9 +118,6 @@ void App::drawGui() {
 			for (int i = 0; i < static_cast<int>(m_datasets.size()); ++i) {
 				const DatasetEntry& entry = m_datasets[i];
 
-				// Show size, and for .simlod the exact point count -- derivable from the
-				// file size without reading it, so the dropdown can be sanity-checked
-				// against the reference before loading anything.
 				std::string label = entry.label;
 				label += "   " + formatNumber(double(entry.bytes) / (1024.0 * 1024.0)) +
 				         " MB";
@@ -184,12 +149,8 @@ void App::drawGui() {
 			                  m_datasetDir.c_str());
 		}
 
-		// Ingest is synchronous, so a multi-GB file stalls the window. Say so rather
-		// than letting it look like a hang.
 		ImGui::TextDisabled("loading blocks the window; 5 GB takes a few seconds");
 
-		// The synthetic fixture, for bringing things up without touching a file. Note
-		// CudaLOD is refused for it -- see the tooltip on the pipeline entry.
 		ImGui::TextUnformatted("synthetic:");
 		const struct {
 			const char* label;
@@ -204,10 +165,8 @@ void App::drawGui() {
 			}
 		}
 
-		// Files can also be dropped on the window; that goes through the same path.
 	}
 
-	// --- pipeline selection ------------------------------------------------
 	sectionHeader("Pipeline");
 	{
 		const std::vector<PipelineInfo>& infos = m_registry.list();
@@ -217,15 +176,8 @@ void App::drawGui() {
 				m_registry.unsupportedReason(info, m_meta, m_budget);
 			const bool fits = reason.empty();
 
-			// A pipeline that cannot fit the loaded cloud is disabled rather than
-			// allowed to crash. On a 16GB card this is a real case, not a hypothetical.
 			beginDisabled(!fits);
 			if (ImGui::RadioButton(info.displayName.c_str(), isActive) && !isActive) {
-				// REQUEST the switch; App applies it at the top of the next frame.
-				//
-				// Switching here would destroy the pipeline that `pipeline` above
-				// points at, and this function goes on to read its stats and call
-				// pipeline->gui() -- a use-after-free that crashes on the first click.
 				m_pendingPipeline = info.id;
 			}
 			endDisabled(!fits);
@@ -235,10 +187,6 @@ void App::drawGui() {
 		}
 	}
 
-	// --- shared settings ---------------------------------------------------
-	// Everything here applies identically to every pipeline. That is what makes an
-	// A/B attributable to the LOD algorithm rather than to one of them having been
-	// handed a different point size.
 	sectionHeader("Shared settings");
 
 	ImGui::SliderFloat("LOD budget (px)", &m_settings.lodPixelBudget, 8.0f, 512.0f,
@@ -270,7 +218,6 @@ void App::drawGui() {
 	ImGui::Combo("colour", &m_settings.colorMode, colorModes,
 	             IM_ARRAYSIZE(colorModes));
 
-	// --- octree wireframe --------------------------------------------------
 	ImGui::Checkbox("node boxes", &m_settings.showBoundingBox);
 	if (ImGui::IsItemHovered()) {
 		ImGui::SetTooltip(
@@ -296,7 +243,6 @@ void App::drawGui() {
 			"hidden frame is not mistaken for a cheap one.");
 	}
 
-	// --- cloud -------------------------------------------------------------
 	sectionHeader("Cloud");
 	if (ImGui::BeginTable("cloud", 2, ImGuiTableFlags_SizingStretchProp)) {
 		statRow("points", m_meta.numPoints);
@@ -306,9 +252,6 @@ void App::drawGui() {
 		ImGui::EndTable();
 	}
 
-	// Surface the f32 precision limit rather than letting it be discovered as
-	// visual noise. Sub-mm for a city block, centimetres nationally, ~0.5m for
-	// ECEF coordinates -- at which point float32 device coordinates are unusable.
 	const double quantError = m_meta.worstQuantisationError();
 	if (quantError > 0.01) {
 		ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
@@ -318,7 +261,6 @@ void App::drawGui() {
 		                    quantError);
 	}
 
-	// --- memory ------------------------------------------------------------
 	sectionHeader("Device memory");
 	ImGui::Text("budget %.2f GB of %.2f GB total",
 	            double(m_budget.bytes) / 1e9, double(m_budget.vramTotal) / 1e9);
@@ -330,7 +272,6 @@ void App::drawGui() {
 			"the GPU at the time.");
 	}
 
-	// --- pipeline stats ----------------------------------------------------
 	if (pipeline) {
 		const PipelineStats& s = pipeline->stats();
 
@@ -346,9 +287,6 @@ void App::drawGui() {
 			ImGui::EndTable();
 		}
 
-		// Health flags. Any of these means the structure was silently truncated, so
-		// the run is not a valid data point -- say so loudly rather than reporting a
-		// suspiciously good number.
 		if (s.allocOverflow) {
 			ImGui::TextColored(ImVec4(1, 0.25f, 0.2f, 1),
 			                   "ALLOCATOR OVERFLOW -- results are invalid");
@@ -371,4 +309,4 @@ void App::drawGui() {
 	ImGui::End();
 }
 
-}  // namespace remo
+}

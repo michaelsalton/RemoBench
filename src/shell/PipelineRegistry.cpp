@@ -5,7 +5,6 @@
 
 #include "remo/PointSource.h"
 
-// The SimLOD ring-size ceiling checked in unsupportedReason() below.
 #include "../../kernels/simlod/simlod_layout.h"
 
 namespace remo {
@@ -39,7 +38,7 @@ void PipelineRegistry::add(PipelineFactory factory) {
 
 bool PipelineRegistry::fits(const PipelineInfo& info, const CloudMeta& meta,
                             const DeviceBudget& budget) const {
-	if (info.bytesPerPointEstimate <= 0.0) return true;  // unknown, allow
+	if (info.bytesPerPointEstimate <= 0.0) return true;
 	const double needed =
 		info.bytesPerPointEstimate * static_cast<double>(meta.numPoints);
 	return needed <= static_cast<double>(budget.bytes);
@@ -59,36 +58,12 @@ std::string PipelineRegistry::unsupportedReason(const PipelineInfo& info,
 		return buf;
 	}
 
-	// KNOWN INCOMPATIBILITY, kept explicit rather than discovered by crashing.
-	//
-	// CudaLOD's build kernels fault with CUDA_ERROR_ILLEGAL_ADDRESS on the synthetic
-	// fixture, at every point count tried (200k .. 36M), while real scans of the same
-	// size load and match the reference exactly. The fault moves between kernel2 and
-	// kernel3 as the count grows, which points at one of upstream's several unchecked
-	// device-side capacities rather than a single off-by-one; its split runs once at a
-	// fixed depth and concedes in its own comments that it cannot subdivide further.
-	//
-	// Not yet root-caused. Refused here because a device fault is unrecoverable: without
-	// this, choosing this pipeline from the dropdown terminates the process.
 	if (meta.isSyntheticFixture && info.id == "cudalod") {
 		return "CudaLOD's split kernel faults on the synthetic fixture's point "
 		       "distribution (not yet root-caused). Load a real .simlod/.las cloud "
 		       "to use this pipeline.";
 	}
 
-	// UPSTREAM LIMIT, kept explicit rather than producing a quietly wrong tree.
-	//
-	// kernel_construct addresses batch N at points + (N % BATCH_STREAM_SIZE) *
-	// MAX_BATCH_SIZE, a ring of 50 one-million-point slots. RemoBench hands it the whole
-	// cloud already resident, where batch N lives at points + N * MAX_BATCH_SIZE with no
-	// wrapping, so the two agree only below 50 batches. Past that the kernel re-reads slot
-	// 0 and builds a tree from the wrong points -- silently, since nothing faults.
-	//
-	// RemoBench used to paper over this by raising BATCH_STREAM_SIZE to 8192 inside
-	// structures.cuh. That worked, at the cost of the comparison baseline no longer being
-	// SimLOD. The baseline is now byte-identical (bench/check_vendored.sh) and the ceiling
-	// is reported instead. RemoLOD raises the constant in its own fork, so it is unaffected;
-	// lifting it for SimLOD means a genuinely wrapping ring in PointSource.
 	if (info.id == "simlod" && meta.numPoints > simlod::kMaxAddressablePoints) {
 		char buf[320];
 		snprintf(buf, sizeof(buf),
@@ -127,7 +102,6 @@ bool PipelineRegistry::switchTo(const std::string& id, PointSource* source,
 		return false;
 	}
 
-	// Release the outgoing pipeline FIRST, so the incoming one sees the full budget.
 	if (m_active) {
 		m_active->release();
 		m_active.reset();
@@ -165,4 +139,4 @@ bool PipelineRegistry::reloadForCloud(PointSource* source, const CloudMeta& meta
 	return true;
 }
 
-}  // namespace remo
+}

@@ -14,41 +14,23 @@
 #include "remo/unsuck.hpp"
 #include "shell/TimingUi.h"
 
-// SimLOD's own host/device contract, vendored unmodified. Deliberately NOT merged into
-// remo/HostDeviceCommon.h: rewriting the struct the reference kernels read is how a port
-// silently stops reproducing its published numbers.
 #include "../../kernels/simlod/HostDeviceInterface.h"
-// The device-layout numbers the host needs. NOT structures.cuh: that calls dot() from
-// helper_math.h and only compiles inside a CUDA translation unit.
 #include "../../kernels/simlod/simlod_layout.h"
 
 namespace remo {
 namespace {
 
-// Momentary (per-launch) scratch for construction.
-//
-// Upstream uses 300MB, and its kernel allocates roughly 409MB from it -- 10M voxel-backlog
-// entries at 16B, 10M targets at 8B, 10M spilled points at 16B, a 1M-entry chunk queue and
-// assorted counters. It survives only because those arrays are never filled anywhere near
-// capacity, with chunkQueue's base pointer landing entirely outside the allocation and its
-// writes going into whatever cuMemAlloc returned next.
-//
-// Sized here from the actual allocation sum with headroom, so the buffer genuinely contains
-// what the kernel hands out. Do not lower it to upstream's 300MB.
 constexpr uint64_t kMomentaryBytes = 512ull << 20;
 
-// The Node pool, from the shared layout header (static_asserted against the real struct).
 constexpr uint32_t kMaxNodes = simlod::kMaxNodes;
 
-// Persistent octree store, per input point. Chunks are 16KB for 1000 points (~16 B/pt), and
-// every inner node also carries a 256KB occupancy grid, which dominates for a deep tree.
 constexpr double kBytesPerPointPersistent = 48.0;
 constexpr uint64_t kMinPersistentBytes = 512ull << 20;
 
 constexpr uint64_t kBytesPerPixelScratch = 64;
 constexpr uint64_t kMinScratchBytes = 64ull << 20;
 
-}  // namespace
+}
 
 SimlodPipeline::SimlodPipeline(CudaContext& cuda) : m_cuda(cuda) {}
 SimlodPipeline::~SimlodPipeline() { release(); }
@@ -58,10 +40,7 @@ PipelineInfo SimlodPipeline::info() const {
 	info.id = "simlod";
 	info.displayName = "SimLOD (progressive)";
 	info.progressive = true;
-	// False in principle -- the whole point is that it streams. True for now, because ingest
-	// is the resident path until the pinned-pool loader lands.
 	info.needsWholeCloudResident = true;
-	// Persistent store plus the resident input points the source holds.
 	info.bytesPerPointEstimate = kBytesPerPointPersistent + 16.0;
 	return info;
 }
@@ -89,9 +68,6 @@ bool SimlodPipeline::initPrograms(std::string* err) {
 		}
 	}
 
-	// A tree built by the previous version of the construct kernel is not valid input to the
-	// new one, so a hot reload must reset. Upstream does not do this and leaves the old tree
-	// on screen, which is a confusing thing to debug.
 	m_constructProgram->onCompile([this] { m_needsReset = true; });
 
 	return true;
@@ -149,12 +125,8 @@ bool SimlodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget,
 	    !alloc(&m_nodes, m_nodesBytes, "the node pool") ||
 	    !alloc(&m_statsBuffer, sizeof(Stats), "stats") ||
 	    !alloc(&m_frameStart, 8, "the frame timestamp") ||
-	    // CudaPrint is a no-op on both ends but is threaded through both kernel
-	    // signatures, so it gets a small real allocation rather than a null pointer.
 	    !alloc(&m_cudaPrint, 1024, "the CudaPrint buffer") ||
 	    !alloc(&m_diagnostics, sizeof(DeviceDiagnostics), "diagnostics") ||
-	    // Must hold BATCH_STREAM_SIZE entries: reset writes all of them. See the member
-	    // comment in the header for why reset does not get the real buffer.
 	    !alloc(&m_resetBatchSizes, uint64_t(simlod::kBatchStreamSize) * 4,
 	           "reset's batchSizes scratch") ||
 	    !alloc(&m_resetNumUploaded, 4, "reset's numBatchesUploaded scratch")) {
@@ -185,8 +157,6 @@ void SimlodPipeline::release() {
 }
 
 void SimlodPipeline::reset() {
-	// The timing samples are dropped by build(), where the profiler is in hand -- see
-	// the reset branch there.
 	m_needsReset = true;
 	m_complete = false;
 	m_batchesConsumed = 0;
@@ -194,8 +164,6 @@ void SimlodPipeline::reset() {
 
 TimingScopes SimlodPipeline::timingScopes() const {
 	TimingScopes scopes;
-	// Both construction launches, or the reported build total under-reports. reset is
-	// one block and cheap, but "cheap" is a measurement, not an assumption.
 	scopes.build = {"simlod.reset", "simlod.construct"};
 	scopes.render = "simlod.render";
 	return scopes;
@@ -205,10 +173,6 @@ void SimlodPipeline::fillUniforms(const FrameContext& frame, void* out) const {
 	Uniforms* u = static_cast<Uniforms*>(out);
 	std::memset(u, 0, sizeof(Uniforms));
 
-	// Only four fields are read by kernel_construct: boxMin, boxMax, frameCounter and
-	// persistentBufferCapacity. The rest exist for upstream's own renderer, which we do not
-	// use -- shading is driven from SharedUniforms instead, so they stay zero rather than
-	// becoming controls that appear to do something.
 	u->boxMin = make_float3(frame.uniforms.boxMin.x, frame.uniforms.boxMin.y,
 	                        frame.uniforms.boxMin.z);
 	u->boxMax = make_float3(frame.uniforms.boxMax.x, frame.uniforms.boxMax.y,
@@ -227,8 +191,6 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 
 	const BatchView view = source.view();
 	if (view.slots == 0 || view.batchSizes == 0 || view.numBatchesUploaded == 0) {
-		// The source has not published a batch view. Nothing to do; not an error, since a
-		// streaming source may simply not have started yet.
 		return true;
 	}
 	m_batchesTotal = view.numBatchesTotal;
@@ -242,27 +204,17 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 	CUdeviceptr batchSizes = view.batchSizes;
 	CUdeviceptr numUploaded = view.numBatchesUploaded;
 
-	// --- reset, if needed -------------------------------------------------
 	if (m_needsReset) {
 		CUfunction resetKernel = m_resetProgram->kernel("kernel");
 		if (!resetKernel) return false;
 
-		// Scratch, not the source's real metadata -- see the header.
 		CUdeviceptr resetSizes = m_resetBatchSizes;
 		CUdeviceptr resetUploaded = m_resetNumUploaded;
 		void* resetArgs[] = {&uniforms,  &persistent,    &nodes,     &statsPtr,
 		                     &cudaPrint, &resetUploaded, &resetSizes};
 
-		// The tree the previous samples describe no longer exists, and a distribution
-		// spanning two different trees describes neither. Drop them here rather than in
-		// reset(), which does not have the profiler.
 		if (frame.profiler) frame.profiler->clearPrefix("simlod.");
 
-		// One block, one thread -- but a COOPERATIVE launch, because reset.cu calls
-		// grid.sync(). A plain cuLaunchKernel makes that undefined, and the failure mode is
-		// a bare CUDA_ERROR_LAUNCH_FAILED ("unspecified launch failure") that says nothing
-		// about the cause. Every kernel in both reference pipelines grid-syncs, so
-		// cooperative launch is the rule here, not the exception.
 		{
 			GpuScope scope(frame.profiler, "simlod.reset");
 			REMO_CU(cuLaunchCooperativeKernel(resetKernel, 1, 1, 1, 1, 1, 1, 0, 0,
@@ -282,12 +234,9 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 
 	if (m_complete) return false;
 
-	// --- one bounded construction step ------------------------------------
 	CUfunction construct = m_constructProgram->kernel("kernel_construct");
 	if (!construct) return false;
 
-	// The device-side 10ms budget is measured against this, so it must be refreshed every
-	// launch or the kernel believes it is already out of time.
 	const uint64_t nowNs = static_cast<uint64_t>(now() * 1e9);
 	REMO_CU(cuMemcpyHtoD(m_frameStart, &nowNs, sizeof(nowNs)));
 
@@ -297,7 +246,6 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 	void* args[] = {&uniforms, &points,     &momentary,  &persistent, &nodes,
 	                &statsPtr, &frameStart, &cudaPrint,  &numUploaded, &batchSizes};
 
-	// Upstream launches this at exactly 1 block per SM.
 	const int grid = m_cuda.gridForKernel(construct, m_blockSize, 1);
 
 	{
@@ -315,12 +263,11 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 
 	readStats();
 
-	// Progressive: done once every batch has been consumed.
 	if (m_batchesTotal > 0 && m_batchesConsumed >= m_batchesTotal) {
 		m_complete = true;
 		return false;
 	}
-	return true;  // more to do next frame
+	return true;
 }
 
 void SimlodPipeline::readStats() {
@@ -345,8 +292,6 @@ void SimlodPipeline::readStats() {
 	m_stats.bytesAllocated = m_persistentBytes + m_momentaryBytes + m_nodesBytes;
 	m_stats.memCapacityReached = s.memCapacityReached;
 
-	// numNodes is a bump index grown by `atomicAdd(&stats->numNodes, 8)` with no capacity
-	// check on the device, so this is the only place the pool running out can be noticed.
 	if (m_stats.numNodes >= kMaxNodes) m_stats.nodeCapacityReached = true;
 }
 
@@ -354,8 +299,6 @@ void SimlodPipeline::ensureScratch(int width, int height) {
 	const uint64_t pixels =
 		static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
 	uint64_t needed = std::max(pixels * kBytesPerPixelScratch, kMinScratchBytes);
-	// The render kernel also allocates the draw list plus two MAX_NODES_CAPACITY flag
-	// arrays.
 	needed += 16ull << 20;
 	if (needed <= m_scratchBytes) return;
 
@@ -390,9 +333,6 @@ void SimlodPipeline::render(const FrameContext& frame) {
 
 	const int grid = m_cuda.gridForKernel(kernel, m_blockSize);
 	{
-		// The measurement that did not exist before this layer: SimLOD's render kernel
-		// was launched with no events on either side, so the GUI's "render kernel" row
-		// showed a default-initialised 0.00 formatted exactly like a real number.
 		GpuScope scope(frame.profiler, "simlod.render");
 		REMO_CU(cuLaunchCooperativeKernel(kernel, static_cast<unsigned>(grid), 1, 1,
 		                                  static_cast<unsigned>(m_blockSize), 1, 1, 0, 0,
@@ -410,8 +350,6 @@ void SimlodPipeline::render(const FrameContext& frame) {
 	DeviceDiagnostics d = {};
 	if (cuMemcpyDtoH(&d, m_diagnostics, sizeof(DeviceDiagnostics)) == CUDA_SUCCESS) {
 		if (d.allocOverflow) m_stats.allocOverflow = true;
-		// Our render kernel owns selection, so these come from it rather than from
-		// upstream's Stats (which our renderer never writes).
 		m_stats.numVisibleNodes = d.drawItems;
 		m_stats.numVisiblePoints = d.drawSamples;
 	}
@@ -441,10 +379,6 @@ void SimlodPipeline::gui(const GpuProfiler& profiler) {
 			ImGui::Text(fmt, v);
 		};
 
-		// A progressive build is hundreds of bounded launches, each governed by the
-		// device-side MAX_PROCESSING_TIME budget. The interesting question is the SHAPE
-		// of that distribution -- does the budget hold, and how does per-launch cost
-		// evolve as the octree deepens -- which a running sum cannot answer.
 		timingRow(profiler, "reset (ms)", "simlod.reset");
 		timingRow(profiler, "construct (ms)", "simlod.construct");
 		timingRow(profiler, "render (ms)", "simlod.render");
@@ -453,8 +387,6 @@ void SimlodPipeline::gui(const GpuProfiler& profiler) {
 		row("build total", "%.2f ms", totals.ms);
 		row("launches", "%.0f", static_cast<double>(totals.launches));
 
-		// Ingest throughput is a whole-build figure, so it divides by the SUM over every
-		// launch -- unlike CudaLOD's, which is one build and uses the median.
 		const double mps = totals.ms > 0.0
 		                       ? double(m_stats.numPointsIngested) / 1e6 /
 		                             (totals.ms / 1000.0)
@@ -478,4 +410,4 @@ void SimlodPipeline::gui(const GpuProfiler& profiler) {
 	}
 }
 
-}  // namespace remo
+}

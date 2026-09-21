@@ -11,7 +11,7 @@ namespace remo {
 namespace {
 constexpr uint64_t kHeaderBytes = 24;
 constexpr uint64_t kPointBytes = 16;
-}  // namespace
+}
 
 bool readSimlod(const std::string& path, CloudMeta& meta,
                 std::vector<Point>& points, std::string* err) {
@@ -28,8 +28,6 @@ bool readSimlod(const std::string& path, CloudMeta& meta,
 
 	const uint64_t payload = fileSize - kHeaderBytes;
 	if (payload % kPointBytes != 0) {
-		// The count is inferred from file size, so this is the only truncation check
-		// the format permits. Refuse rather than silently dropping a partial point.
 		if (err) {
 			*err = "point data is not a multiple of 16 bytes (truncated?): " + path;
 		}
@@ -57,9 +55,6 @@ bool readSimlod(const std::string& path, CloudMeta& meta,
 	meta.files = {path};
 	meta.hasCompressed = false;
 
-	// One resize, one read. Point is exactly 16 bytes and laid out identically to
-	// the on-disk record, which is the whole reason this format is fast -- so read
-	// straight into the destination rather than parsing per point.
 	static_assert(sizeof(Point) == 16, "Point must match the .simlod record");
 	points.resize(meta.numPoints);
 	in.read(reinterpret_cast<char*>(points.data()),
@@ -69,9 +64,6 @@ bool readSimlod(const std::string& path, CloudMeta& meta,
 		return false;
 	}
 
-	// The header's bbox is float32 and comes from a different code path than the
-	// points, so it can disagree with them. Trust the points: a wrong bbox silently
-	// mis-frames the camera and, later, mis-sizes an octree root.
 	double lo[3] = {1e300, 1e300, 1e300};
 	double hi[3] = {-1e300, -1e300, -1e300};
 	for (const Point& p : points) {
@@ -91,4 +83,4 @@ bool readSimlod(const std::string& path, CloudMeta& meta,
 	return true;
 }
 
-}  // namespace remo
+}

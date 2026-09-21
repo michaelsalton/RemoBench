@@ -23,7 +23,6 @@ CudaContext::CudaContext() {
 	                     CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, m_device);
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 13000
-	// CUDA 13: cuCtxCreate is the _v4 variant, taking CUctxCreateParams*.
 	REMO_CU_FATAL(cuCtxCreate(&m_context, nullptr, 0, m_device));
 #else
 	REMO_CU_FATAL(cuCtxCreate(&m_context, 0, m_device));
@@ -64,11 +63,8 @@ int CudaContext::gridForKernel(CUfunction kernel, int blockSize,
 	const int residentMax = maxBlocksPerSM * m_numSMs;
 	if (smFactor <= 0) return residentMax;
 
-	// Requested blocks-per-SM, clamped to what can actually be resident. Clamping
-	// rather than trusting the request is deliberate: a cooperative launch that
-	// asks for more than fits does not degrade, it fails.
 	const int requested = smFactor * m_numSMs;
 	return std::min(requested, residentMax);
 }
 
-}  // namespace remo
+}

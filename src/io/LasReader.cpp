@@ -15,16 +15,9 @@ namespace remo {
 
 namespace {
 
-// Public header block sizes: 227 bytes through LAS 1.2, 235 in 1.3, 375 in 1.4.
-// Anything before offset 227 is common to every version, which is all the geometry
-// fields live in -- the 1.4-only extended point count at 247 is the one exception.
 constexpr uint64_t kHeaderBytesCommon = 227;
 constexpr uint64_t kHeaderBytesMax = 375;
 
-// Field offsets, from the ASPRS LAS 1.4 R15 specification. Named rather than inlined
-// because a transposed pair here produces a plausible-looking cloud rather than an
-// error -- min/max are stored max-then-min, which is exactly the kind of thing that
-// gets "fixed" into a bug.
 constexpr size_t kOffSignature = 0;
 constexpr size_t kOffVersionMajor = 24;
 constexpr size_t kOffVersionMinor = 25;
@@ -35,7 +28,7 @@ constexpr size_t kOffPointRecordLength = 105;
 constexpr size_t kOffLegacyNumPoints = 107;
 constexpr size_t kOffScaleX = 131;
 constexpr size_t kOffOffsetX = 155;
-constexpr size_t kOffMaxX = 179;  // max/min interleaved per axis: maxX,minX,maxY,...
+constexpr size_t kOffMaxX = 179;
 constexpr size_t kOffMinX = 187;
 constexpr size_t kOffExtendedNumPoints = 247;
 
@@ -46,9 +39,6 @@ T readField(const std::vector<char>& buf, size_t offset) {
 	return v;
 }
 
-// Standard record length and RGB position per point data record format. `rgbOffset`
-// of 0 means the format carries no colour (0, 1, 4, 6, 9 -- geometry, GPS time,
-// waveforms).
 struct FormatGeometry {
 	uint32_t standardBytes;
 	uint32_t rgbOffset;
@@ -64,21 +54,15 @@ bool formatGeometry(uint32_t format, FormatGeometry& out) {
 		case 5:  out = {63, 28}; return true;
 		case 6:  out = {30, 0};  return true;
 		case 7:  out = {36, 30}; return true;
-		case 8:  out = {38, 30}; return true;  // fmt 8 also carries NIR at 36
+		case 8:  out = {38, 30}; return true;
 		case 9:  out = {59, 0};  return true;
 		case 10: out = {67, 30}; return true;
 		default: return false;
 	}
 }
 
-// Points per read. 64k * 67 bytes is a 4.3 MB thread buffer at the widest format,
-// which keeps a loader thread's working set inside L2-ish territory while still
-// asking the filesystem for chunks big enough to saturate an NVMe queue.
 constexpr uint64_t kBlockPoints = 64 * 1024;
 
-// Loader threads. More than this stops helping on the formats that matter: the parse
-// is a dozen instructions per point, so the whole thing is bound by read bandwidth
-// long before it is bound by cores.
 constexpr unsigned kMaxLoaderThreads = 8;
 
 struct Bounds {
@@ -101,7 +85,7 @@ struct Bounds {
 	}
 };
 
-}  // namespace
+}
 
 bool readLasHeader(const std::string& path, LasHeaderInfo& info, std::string* err) {
 	std::error_code ec;
@@ -142,15 +126,10 @@ bool readLasHeader(const std::string& path, LasHeaderInfo& info, std::string* er
 	const uint32_t headerSize = readField<uint16_t>(buf, kOffHeaderSize);
 	info.offsetToPointData = readField<uint32_t>(buf, kOffPointDataOffset);
 
-	// The two high bits of the format byte are the compression flag laszip sets;
-	// 0x80 is what it writes today and 0x40 is the older encoding. Masking is not
-	// optional -- an unmasked 0x82 reads as "format 130" and fails the table lookup.
 	const uint8_t rawFormat = readField<uint8_t>(buf, kOffPointFormat);
 	info.format = rawFormat & 0x3F;
 	info.compressed = (rawFormat & 0xC0) != 0;
 
-	// Extension as a fallback only: it is the flag that is authoritative, since a
-	// compressed file is occasionally handed over named .las.
 	std::string ext = fs::path(path).extension().string();
 	std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
 		return static_cast<char>(std::tolower(c));
@@ -159,9 +138,6 @@ bool readLasHeader(const std::string& path, LasHeaderInfo& info, std::string* er
 
 	info.bytesPerPoint = readField<uint16_t>(buf, kOffPointRecordLength);
 
-	// LAS 1.4 moved the count to a 64-bit field and requires the legacy one to be 0
-	// for the formats it introduced. Prefer the wide one, fall back to the legacy
-	// value, because files written by 1.2-era tooling and stamped 1.4 do exist.
 	if (info.versionMajor == 1 && info.versionMinor >= 4 &&
 	    want >= kOffExtendedNumPoints + 8) {
 		info.numPoints = readField<uint64_t>(buf, kOffExtendedNumPoints);
@@ -200,15 +176,10 @@ bool readLasHeader(const std::string& path, LasHeaderInfo& info, std::string* er
 		return false;
 	}
 	if (info.scale[0] == 0.0 || info.scale[1] == 0.0 || info.scale[2] == 0.0) {
-		// A zero scale collapses an axis to a single plane. Refuse rather than
-		// render a flat cloud and let someone wonder why.
 		if (err) *err = "LAS header declares a zero scale factor: " + path;
 		return false;
 	}
 
-	// Only the uncompressed layout has a predictable size, so this is the only case
-	// where truncation is detectable up front. It is worth detecting: a short read
-	// 30 GB into a load is a slow way to find out.
 	if (!info.compressed) {
 		const uint64_t need =
 			info.offsetToPointData +
@@ -232,8 +203,6 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
                    const double translation[3], Point* out,
                    double translatedBounds[6], std::string* err) {
 	if (info.compressed) {
-		// Caller error, not file error: the record length in a LAZ header describes
-		// the decompressed record, so this parser would read structured noise.
 		if (err) *err = "compressed input must go through readLazPoints";
 		return false;
 	}
@@ -245,8 +214,6 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 	const uint32_t bpp = info.bytesPerPoint;
 	const uint32_t rgbOffset = info.rgbOffset;
 	const double sx = info.scale[0], sy = info.scale[1], sz = info.scale[2];
-	// Fold the translation into the header's own offset, so the inner loop is one
-	// multiply-add per axis and the addition still happens in float64.
 	const double ox = info.offset[0] + translation[0];
 	const double oy = info.offset[1] + translation[1];
 	const double oz = info.offset[2] + translation[2];
@@ -257,8 +224,6 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 	numThreads = static_cast<unsigned>(
 		std::min<uint64_t>(numThreads, std::max<uint64_t>(numBlocks, 1)));
 
-	// Contiguous range per thread rather than interleaved blocks: sequential access
-	// within a thread is what readahead rewards.
 	const uint64_t blocksPerThread = (numBlocks + numThreads - 1) / numThreads;
 
 	std::atomic<bool> failed{false};
@@ -304,8 +269,6 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 			for (uint64_t i = 0; i < n; ++i) {
 				const uint8_t* record = buf.data() + i * bpp;
 
-				// memcpy, not a reinterpret_cast: record lengths of 57, 63 and 67
-				// leave the int32 triple unaligned on most points.
 				int32_t xyz[3];
 				std::memcpy(xyz, record, 12);
 
@@ -349,4 +312,4 @@ bool readLasPoints(const std::string& path, const LasHeaderInfo& info,
 	return true;
 }
 
-}  // namespace remo
+}
