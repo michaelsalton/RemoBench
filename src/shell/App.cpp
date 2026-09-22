@@ -89,6 +89,7 @@ void App::registerPipelines() {
 		auto p = std::make_unique<RemolodPipeline>(*m_cuda);
 		p->setAccumEnabled(!m_options.remolodNoAccum);
 		p->setPhaseTimings(m_options.remolodPhaseTimings);
+		p->setFixedDepth(m_options.remolodFixedDepth);
 		return p;
 	});
 	m_registry.add([this] { return std::make_unique<CudalodPipeline>(*m_cuda); });

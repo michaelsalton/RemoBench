@@ -31,6 +31,11 @@ struct AppOptions {
 	bool remolodNoAccum = false;
 	bool remolodPhaseTimings = false;
 
+	// 0 = off, the default iterative expand(). 1..8 selects the fixed-depth arm,
+	// which is a compiled variant of the construct kernel and so cannot be a GUI
+	// control. See plans/07_HardCodingExpandStage.md.
+	int remolodFixedDepth = 0;
+
 	std::string dumpFramePath;
 	int dumpAfterFrames = 8;
 	bool dumpIncludeGui = false;

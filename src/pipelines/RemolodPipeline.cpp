@@ -79,10 +79,15 @@ bool RemolodPipeline::initPrograms(std::string* err) {
 		KernelProgramDesc desc;
 		desc.modules = {spec.module};
 		desc.kernels = spec.kernels;
-		// Only the construct kernel carries phase marks. defines is part of the
-		// compile cache key, so both variants cache side by side.
-		if (m_phaseTimings && spec.target == &m_constructProgram) {
-			desc.defines = {"-DREMO_PROFILE"};
+		// Only the construct kernel carries phase marks, or the fixed-depth arm.
+		// defines is part of the compile cache key, so every variant caches side
+		// by side and a sweep over the depth recompiles each value once.
+		if (spec.target == &m_constructProgram) {
+			if (m_phaseTimings) desc.defines.push_back("-DREMO_PROFILE");
+			if (m_fixedDepth > 0) {
+				desc.defines.push_back("-DREMO_FIXED_DEPTH=" +
+				                       std::to_string(m_fixedDepth));
+			}
 		}
 		*spec.target = std::make_unique<CudaModularProgram>(std::move(desc));
 		if (!(*spec.target)->ok()) {
@@ -123,20 +128,33 @@ bool RemolodPipeline::allocate(const CloudMeta& meta, const DeviceBudget& budget
 	m_nodeAccumsBytes = static_cast<uint64_t>(kMaxNodes) * sizeof(NodeAccum);
 	m_momentaryBytes = kMomentaryBytes;
 
+	const uint64_t fixedBytes = m_nodesBytes + m_momentaryBytes + m_nodeAccumsBytes;
+
 	uint64_t wantPersistent = static_cast<uint64_t>(
 		kBytesPerPointPersistent * static_cast<double>(meta.numPoints));
 	wantPersistent = std::max(wantPersistent, kMinPersistentBytes);
 
-	const uint64_t fixed = m_nodesBytes + m_momentaryBytes + m_nodeAccumsBytes;
-	if (available < fixed + kMinPersistentBytes) {
+	// The fixed-depth arm does not cost 48 B/pt and cannot be sized from the
+	// baseline's coefficient: every node that becomes inner takes 256 KB of
+	// occupancy grid that is never returned (CLAUDE.md -- collapsing would need a
+	// grid pool that does not exist), so pre-splitting ratchets the store upwards
+	// with D. At D=7 on morro_bay the 48 B/pt store stops the build at 58% of the
+	// cloud, and a truncated run is not comparable to a complete one. So the arm
+	// takes what the shared budget leaves, and the budget -- which every memory
+	// figure is relative to anyway -- stays the one that has to be named.
+	if (m_fixedDepth > 0 && available > fixedBytes) {
+		wantPersistent = std::max(wantPersistent, available - fixedBytes);
+	}
+
+	if (available < fixedBytes + kMinPersistentBytes) {
 		if (err) {
 			*err = "not enough device memory: needs at least " +
-			       std::to_string((fixed + kMinPersistentBytes) / (1024 * 1024)) +
+			       std::to_string((fixedBytes + kMinPersistentBytes) / (1024 * 1024)) +
 			       " MB, " + std::to_string(available / (1024 * 1024)) + " MB available";
 		}
 		return false;
 	}
-	m_persistentBytes = std::min(wantPersistent, available - fixed);
+	m_persistentBytes = std::min(wantPersistent, available - fixedBytes);
 
 	auto alloc = [&](CUdeviceptr* ptr, uint64_t bytes, const char* what) {
 		if (REMO_CU(cuMemAlloc(ptr, bytes)) != CUDA_SUCCESS) {
@@ -351,6 +369,11 @@ bool RemolodPipeline::build(PointSource& source, const FrameContext& frame) {
 		m_phaseBatches = m_phaseExpandIters = 0;
 		m_phaseSpilledPoints = m_phaseNodesSplit = 0;
 		m_phaseOverflow = 0;
+		m_fixedBucketMs = m_fixedPyramidMs = 0.0;
+		m_fixedMaterialiseMs = m_fixedSeedMs = 0.0;
+		m_occupiedCells = 0;
+		m_nodePoolOverflow = false;
+		m_counterUnderflows = 0;
 
 		m_needsReset = false;
 		m_complete = false;
@@ -452,14 +475,37 @@ static const char* const kPhaseScope[kNumConstructPhases] = {
 };
 
 void RemolodPipeline::readTimeline(const FrameContext& frame) {
-	if (!m_phaseTimings || !m_timeline) return;
+	if (!m_timeline) return;
 
 	DeviceTimeline t = {};
 	if (REMO_CU(cuMemcpyDtoH(&t, m_timeline, sizeof(DeviceTimeline))) != CUDA_SUCCESS) {
 		return;
 	}
+
+	// The counter block is written in every build variant -- it is how the node
+	// pool check reports at all -- so it is read BEFORE the phase-timing early
+	// return, not after it. Only the marks below are profiling-only.
+	m_stats.maxPointsPerNode = t.maxPointsPerNode;
+	if (t.nodePoolOverflow) m_nodePoolOverflow = true;
+	if (t.counterUnderflows) m_counterUnderflows = t.counterUnderflows;
+	m_occupiedCells += t.occupiedCells;
+
+	if (!m_phaseTimings) return;
+
 	if (t.overflow) m_phaseOverflow = 1;
-	if (t.numMarks < 2) return;
+
+	m_fixedBucketMs += double(t.bucketNs) / 1e6;
+	m_fixedPyramidMs += double(t.pyramidNs) / 1e6;
+	m_fixedMaterialiseMs += double(t.materialiseNs) / 1e6;
+	m_fixedSeedMs += double(t.seedNs) / 1e6;
+
+	if (t.numMarks < 2) {
+		m_phaseBatches += t.batches;
+		m_phaseExpandIters += t.expandIters;
+		m_phaseSpilledPoints += t.spilledPoints;
+		m_phaseNodesSplit += t.nodesSplit;
+		return;
+	}
 
 	// A mark records the phase that BEGINS at it, so consecutive marks bound one
 	// phase. Summed over the batches in this launch, then handed to the profiler
@@ -554,6 +600,37 @@ std::vector<std::string> RemolodPipeline::diagnostics() const {
 	std::vector<std::string> out;
 	char buf[128];
 
+	// The node pool has no other report. Printed before everything else, in every
+	// variant, because a tree that hit the pool ceiling is a tree whose counts
+	// mean something different -- and both blocks below can return early.
+	if (m_nodePoolOverflow) {
+		out.push_back("node pool\tOVERFLOW (raise MAX_NODES_CAPACITY)");
+	}
+
+	snprintf(buf, sizeof(buf), "%s", m_counterUnderflows == 0 ? "ok" : "VIOLATED");
+	if (m_counterUnderflows != 0) {
+		snprintf(buf, sizeof(buf), "VIOLATED in %u leaves (counter < numPoints)",
+		         m_counterUnderflows);
+	}
+	out.push_back(std::string("leaf counter >= pts\t") + buf);
+
+	if (m_fixedDepth > 0) {
+		snprintf(buf, sizeof(buf), "%d (oracle arm, --remolod-fixed-depth)",
+		         m_fixedDepth);
+		out.push_back(std::string("fixed depth\t") + buf);
+
+		const double batches = m_phaseBatches > 0 ? double(m_phaseBatches) : 0.0;
+		if (batches > 0.0) {
+			snprintf(buf, sizeof(buf), "%.0f", double(m_occupiedCells) / batches);
+			out.push_back(std::string("occupied cells/batch\t") + buf);
+		} else {
+			snprintf(buf, sizeof(buf), "%llu (total; no batch count without "
+			                           "--remolod-phase-timings)",
+			         static_cast<unsigned long long>(m_occupiedCells));
+			out.push_back(std::string("occupied cells\t") + buf);
+		}
+	}
+
 	// Phase timings first: the measurement protocol runs with the accumulator
 	// off, and the accumulator block below returns early in that case.
 	if (m_phaseTimings) {
@@ -586,6 +663,21 @@ std::vector<std::string> RemolodPipeline::diagnostics() const {
 		snprintf(buf, sizeof(buf), "%.2f ms",
 		         m_phaseMs[kPhaseExpand] - iter0 - itersRest);
 		out.push_back(std::string("expand splitting\t") + buf);
+
+		// The fixed arm's four sub-passes. In the baseline these are all zero and
+		// the rows say so rather than being hidden, so the two arms' diagnostics
+		// line up column for column.
+		if (m_fixedDepth > 0) {
+			const double subs[4] = {m_fixedBucketMs, m_fixedPyramidMs,
+			                        m_fixedMaterialiseMs, m_fixedSeedMs};
+			static const char* const names[4] = {"fixed bucket", "fixed pyramid",
+			                                     "fixed materialise", "fixed seed"};
+			for (int i = 0; i < 4; ++i) {
+				snprintf(buf, sizeof(buf), "%.2f ms  %.1f%% of construct", subs[i],
+				         total > 0.0 ? 100.0 * subs[i] / total : 0.0);
+				out.push_back(std::string(names[i]) + "\t" + buf);
+			}
+		}
 
 		const double batches = m_phaseBatches > 0 ? double(m_phaseBatches) : 1.0;
 		snprintf(buf, sizeof(buf), "%llu", (unsigned long long)m_phaseBatches);
@@ -695,6 +787,17 @@ void RemolodPipeline::guiStats(const GpuProfiler& profiler) {
 		ImGui::EndTable();
 	}
 
+	// Read-only: the depth selects a compiled variant of the construct kernel, so
+	// it has to be fixed before initPrograms() and cannot be a control here.
+	if (m_fixedDepth > 0) {
+		ImGui::Separator();
+		ImGui::Text("fixed-depth arm: D = %d (oracle, no predictor)", m_fixedDepth);
+	}
+	if (m_nodePoolOverflow) {
+		ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
+		                   "node pool OVERFLOW - raise MAX_NODES_CAPACITY");
+	}
+
 	// Phase breakdown. Deliberately NOT in TimingScopes::build: buildTotals()
 	// sums every name there, and these are sub-phases of remolod.construct.
 	if (m_phaseTimings) {
@@ -722,6 +825,13 @@ void RemolodPipeline::guiStats(const GpuProfiler& profiler) {
 			prow("expand iters/batch", "%.2f", double(m_phaseExpandIters) / batches);
 			prow("spilled pts/batch", "%.0f", double(m_phaseSpilledPoints) / batches);
 			prow("nodes split/batch", "%.1f", double(m_phaseNodesSplit) / batches);
+			if (m_fixedDepth > 0) {
+				prow("bucket (ms)", "%.2f", m_fixedBucketMs);
+				prow("pyramid (ms)", "%.2f", m_fixedPyramidMs);
+				prow("materialise (ms)", "%.2f", m_fixedMaterialiseMs);
+				prow("seed (ms)", "%.2f", m_fixedSeedMs);
+				prow("occupied cells/batch", "%.0f", double(m_occupiedCells) / batches);
+			}
 			ImGui::EndTable();
 		}
 		if (m_phaseOverflow) {

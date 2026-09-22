@@ -129,16 +129,40 @@ struct DeviceTimeline {
 
 	// What milliseconds alone cannot answer: predicted depth would delete
 	// expand iterations 2..N and the spill re-descent, not all of expand.
+	//
+	// Everything from here down is the COUNTER BLOCK. The mark array above is
+	// written only under REMO_PROFILE; these are written, zeroed and read back in
+	// every variant, because nodePoolOverflow is a safety report and not a
+	// measurement. kernel_construct is not given a DeviceDiagnostics* to carry
+	// them instead: an arity change to that kernel is the defect CLAUDE.md
+	// records as having silently built no tree for a whole commit.
 	uint32_t batches;      // batches folded into this launch
 	uint32_t expandIters;  // summed over batches
 	uint32_t nodesSplit;   // summed over batches
-	uint32_t pad1;
+	uint32_t maxPointsPerNode;  // largest leaf, at the end of this launch
 	uint64_t spilledPoints;                        // summed over batches
 	uint64_t expandIterNs[REMO_MAX_EXPAND_ITERS];  // ns by iteration index
+
+	// The fixed-depth arm (-DREMO_FIXED_DEPTH=N, plans/07_HardCodingExpandStage.md).
+	// Named fields rather than reused expandIterNs[] slots: two meanings on one
+	// field reads fine today and misleads a year from now.
+	uint64_t bucketNs;       // summed over batches
+	uint64_t pyramidNs;
+	uint64_t materialiseNs;
+	uint64_t seedNs;
+	uint32_t occupiedCells;     // depth-D cells that took points, summed over batches
+	uint32_t nodePoolOverflow;  // set in BOTH variants; see doSplitting
+
+	// Leaves with counter < numPoints at the end of the launch. allocatePointChunks
+	// sizes a leaf's chunk list from counter alone, so one of these is an
+	// under-allocated leaf -- and the only complaint the kernel would otherwise
+	// make goes through CudaPrint::print(), which returns on its first line.
+	uint32_t counterUnderflows;
+	uint32_t pad2;
 };
 
 static_assert(sizeof(TimelineMark) == 16, "TimelineMark layout changed");
-static_assert(sizeof(DeviceTimeline) == 4288,
+static_assert(sizeof(DeviceTimeline) == 4336,
               "DeviceTimeline layout changed; host and device must agree");
 
 }

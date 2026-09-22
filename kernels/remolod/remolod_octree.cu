@@ -37,6 +37,46 @@ uint32_t* numBacklogVoxels = nullptr;
 Chunk** chunkQueue         = nullptr;
 CudaPrint* cudaprint       = nullptr;
 
+constexpr uint32_t SPILLING_NODES_CAPACITY = 100'000;
+
+// The fixed-depth arm: -DREMO_FIXED_DEPTH=N, plans/07_HardCodingExpandStage.md.
+// An oracle, not a method -- the depth is a compile-time constant with no
+// computation behind it, so what it measures is the ceiling on what any depth
+// predictor could save. The default build contains none of it.
+#ifdef REMO_FIXED_DEPTH
+
+constexpr int FIXED_DEPTH = REMO_FIXED_DEPTH;
+
+static_assert(FIXED_DEPTH >= 1 && FIXED_DEPTH <= 8,
+	"REMO_FIXED_DEPTH is 1..8. D=9 is 613 MB of cell counters against a 512 MB "
+	"momentary buffer, and its grid demand exceeds the card.");
+
+// Sigma 8^L for L < level: where level L's counters start in the flat block.
+constexpr uint32_t fixedLevelOffset(int level){
+	uint32_t offset = 0;
+	for(int l = 0; l < level; l++) offset += (1u << (3 * l));
+	return offset;
+}
+
+constexpr uint32_t FIXED_NUM_CELLS =
+	fixedLevelOffset(FIXED_DEPTH) + (1u << (3 * FIXED_DEPTH));
+
+// Dense per-level counters over the occupied part of the octree, carved from the
+// momentary buffer. Nothing else in the kernel reads it.
+uint32_t* cellCount = nullptr;
+
+// Nothing ever spills at a fixed depth: points only land at depth D, so no node
+// below D holds points to evacuate. The allocation shrinks to one point rather
+// than disappearing, so every pointer the shared passes take stays valid while
+// the 160 MB it used to cost pays for cellCount instead.
+constexpr uint64_t SPILLED_POINTS_CAPACITY = 1;
+
+#else
+
+constexpr uint64_t SPILLED_POINTS_CAPACITY = 10'000'000;
+
+#endif
+
 // Phase-timing sink. Always passed by the host, in both build variants, so the
 // kernel signature never depends on REMO_PROFILE. Only the marks compile out.
 remo::DeviceTimeline* timeline = nullptr;
@@ -267,6 +307,19 @@ bool doSplitting(Node* nodes, Node** spillingNodes, uint32_t* numSpillingNodes){
 		Node* spillingNode = spillingNodes[spillNodeIndex];
 
 		uint32_t childOffset = atomicAdd(&stats->numNodes, 8);
+
+		// The node pool's only device-side bound. numNodes is a bump index and the
+		// host clamp in readStats was the only place exhaustion was ever noticed --
+		// by which point nodes[childOffset + i] below has already written past the
+		// pool. Unconditional, in both arms: below MAX_NODES_CAPACITY it cannot
+		// change what is built, which is how it is verified (the default tree must
+		// still be 4,137 / 12,742,751). Pre-splitting to a fixed depth is exactly
+		// the "splits more eagerly" case CLAUDE.md warns about.
+		if(childOffset + 8 > MAX_NODES_CAPACITY){
+			if(timeline != nullptr) timeline->nodePoolOverflow = 1;
+			return;   // this node stays a leaf
+		}
+
 		for(int i = 0; i < 8; i++){
 
 			int cx = (i >> 2) & 1;
@@ -324,8 +377,26 @@ bool doSplitting(Node* nodes, Node** spillingNodes, uint32_t* numSpillingNodes){
 
 		Node* spillingNode = spillingNodes[gridIndex];
 
+		// A node whose split the pool check refused never reached the grid
+		// allocation above and is still a leaf with a null grid. Without this the
+		// safety check is itself the fault: D=8 on morro_bay exhausts the pool and
+		// every thread in its zeroing range dereferences nullptr.
+		if(spillingNode->grid == nullptr) return;
+
 		spillingNode->grid->values[localCellIndex] = 0;
 	});
+
+	grid.sync();
+
+	// A refused split above still bumped numNodes, and every later pass sweeps
+	// [0, numNodes). Pin it back to the pool so those sweeps stay inside it; a
+	// further split still fails the check, because the clamped value is itself
+	// over capacity by the time 8 more are asked for.
+	if(grid.thread_rank() == 0 && stats->numNodes > MAX_NODES_CAPACITY){
+		stats->numNodes = MAX_NODES_CAPACITY;
+	}
+
+	grid.sync();
 }
 
 void expand(
@@ -389,6 +460,219 @@ void expand(
 	}
 #endif
 }
+
+#ifdef REMO_FIXED_DEPTH
+
+// The same bit order as childIndex in doCounting -- (x << 2) | (y << 1) | z, most
+// significant level first. That is what makes a cell's parent exactly cell >> 3,
+// so the pyramid below is a shift rather than a remap.
+uint32_t fixedMorton(uint32_t x, uint32_t y, uint32_t z, int level){
+	uint32_t code = 0;
+
+	for(int l = 0; l < level; l++){
+		uint32_t bit = level - 1 - l;
+		code = (code << 3)
+			| (((x >> bit) & 1u) << 2)
+			| (((y >> bit) & 1u) << 1)
+			| ((z >> bit) & 1u);
+	}
+
+	return code;
+}
+
+// expand() with the depth known in advance.
+//
+// The descent disappears, not just the loop: at a fixed depth the destination
+// cell is X >> (MAX_DEPTH - D), computable from the point's own coordinates with
+// no pointer chasing, so one analytic bucketing pass replaces the 3.46 root-to-
+// leaf counting descents per batch that plans/05_ExpandMeasure.md measured. It
+// also yields Node::counter for free, which is allocatePointChunks' only sizing
+// input.
+//
+// doSplitting is called unchanged: child allocation, chunk recycling and the
+// occupancy grid allocate-and-zero keep their existing behaviour, and this pass
+// only chooses WHICH nodes go into spillingNodes.
+//
+// It takes no root, which is the whole point: nothing here walks the tree from
+// the top, so there is nothing to walk it from.
+void expandFixed(
+	Point* points, int numPoints,
+	float3 octreeMin, float octreeSize,
+	Node* nodes,
+	Node** spillingNodes, uint32_t* numSpillingNodes
+){
+	auto grid = cg::this_grid();
+
+	const float fGridSize      = pow(2.0f, float(MAX_DEPTH));
+	constexpr uint32_t shift    = MAX_DEPTH - FIXED_DEPTH;
+	constexpr uint32_t maxCoord = (1u << FIXED_DEPTH) - 1u;
+	constexpr uint32_t depthOffset = fixedLevelOffset(FIXED_DEPTH);
+
+	// Per batch, not per launch: counter accumulates across batches and is reset
+	// only when a node splits, so pass 4 adds this batch's counts to it.
+	processRange(FIXED_NUM_CELLS, [&](int cell){
+		cellCount[cell] = 0;
+	});
+
+	grid.sync();
+
+	// 1. bucket -- proportional to points, and the only pass that is. No tree
+	//    access at all.
+#ifdef REMO_PROFILE
+	const uint64_t t_bucket = nanotime();
+#endif
+
+	processRange(numPoints, [&](int pointID){
+		Point point = points[pointID];
+
+		uint32_t X = fGridSize * (point.x - octreeMin.x) / octreeSize;
+		uint32_t Y = fGridSize * (point.y - octreeMin.y) / octreeSize;
+		uint32_t Z = fGridSize * (point.z - octreeMin.z) / octreeSize;
+
+		// Masked, not clamped. A point exactly on boxMax quantises to 2^MAX_DEPTH
+		// and indexes one cell past the level; the descent this replaces absorbs
+		// that in its per-level & 1, which WRAPS it to cell 0 rather than pinning
+		// it to the last cell. Clamping instead left 30 leaves on morro_bay with
+		// counter < numPoints -- insertPoints descended where this pass had not
+		// counted, and allocatePointChunks under-allocated them. The rule is that
+		// this index must be bit-for-bit what the descent computes, whatever the
+		// descent computes.
+		uint32_t cx = (X >> shift) & maxCoord;
+		uint32_t cy = (Y >> shift) & maxCoord;
+		uint32_t cz = (Z >> shift) & maxCoord;
+
+		atomicAdd(&cellCount[depthOffset + fixedMorton(cx, cy, cz, FIXED_DEPTH)], 1u);
+	});
+
+	grid.sync();
+
+	// 2. pyramid -- proportional to cells, independent of the point count.
+#ifdef REMO_PROFILE
+	const uint64_t t_pyramid = nanotime();
+#endif
+
+	for(int level = FIXED_DEPTH - 1; level >= 0; level--){
+		const uint32_t numCells = 1u << (3 * level);
+		uint32_t* dst = cellCount + fixedLevelOffset(level);
+		uint32_t* src = cellCount + fixedLevelOffset(level + 1);
+
+		processRange(numCells, [&](int cell){
+			uint32_t sum = 0;
+			for(int i = 0; i < 8; i++) sum += src[8 * cell + i];
+			dst[cell] = sum;
+		});
+
+		grid.sync();
+	}
+
+	// 3. materialise -- D grid-wide rounds, root downwards. Every childless node
+	//    at level L whose cell holds points is split, once.
+#ifdef REMO_PROFILE
+	const uint64_t t_materialise = nanotime();
+	uint32_t splitThisBatch = 0;
+#endif
+
+	for(int level = 0; level < FIXED_DEPTH; level++){
+
+		if(grid.thread_rank() == 0) *numSpillingNodes = 0;
+
+		grid.sync();
+
+		const uint32_t numNodes = stats->numNodes;
+		const uint32_t levelOffset = fixedLevelOffset(level);
+
+		// Every node, not just the ones this batch created: a leaf left empty by
+		// an earlier batch sits at a level above D and has to split the moment
+		// points reach it.
+		processRange(numNodes, [&](int nodeIndex){
+			Node* node = &nodes[nodeIndex];
+
+			if(node->level != uint32_t(level)) return;
+			if(!node->isLeafFn()) return;
+
+			uint32_t cell = fixedMorton(node->X, node->Y, node->Z, level);
+			if(cellCount[levelOffset + cell] == 0) return;
+
+			uint32_t spillIndex = atomicAdd(numSpillingNodes, 1);
+			if(spillIndex < SPILLING_NODES_CAPACITY){
+				spillingNodes[spillIndex] = node;
+			}
+		});
+
+		grid.sync();
+
+		// The list is the one thing between here and a write past its end. A node
+		// that does not fit stays a leaf above D, and pass 4 still gives it the
+		// whole subtree's count, so the tree is shallower but not wrong.
+		if(grid.thread_rank() == 0 && *numSpillingNodes > SPILLING_NODES_CAPACITY){
+			*numSpillingNodes = SPILLING_NODES_CAPACITY;
+			if(timeline != nullptr) timeline->nodePoolOverflow = 1;
+		}
+
+		grid.sync();
+
+		if(*numSpillingNodes == 0) continue;
+
+#ifdef REMO_PROFILE
+		splitThisBatch += *numSpillingNodes;
+#endif
+
+		doSplitting(nodes, spillingNodes, numSpillingNodes);
+
+		grid.sync();
+	}
+
+	// 4. seed -- proportional to nodes. allocatePointChunks sizes every leaf's
+	//    chunk list from node->counter and nothing else, and the invariant it
+	//    needs is counter >= the number of points insertPoints will push. The
+	//    bucket pass satisfies it exactly, with no counting descent.
+#ifdef REMO_PROFILE
+	const uint64_t t_seed = nanotime();
+#endif
+
+	const uint32_t numNodes = stats->numNodes;
+
+	processRange(numNodes, [&](int nodeIndex){
+		Node* node = &nodes[nodeIndex];
+
+		if(!node->isLeafFn()) return;
+		if(node->level > uint32_t(FIXED_DEPTH)) return;
+
+		// Every leaf, at whatever level it ended up. Normally that is depth D; a
+		// leaf above D exists only where the node pool or the spilling list ran
+		// out, and the pyramid means its count is already the subtree's total.
+		uint32_t cell = fixedMorton(node->X, node->Y, node->Z, node->level);
+		uint32_t count = cellCount[fixedLevelOffset(node->level) + cell];
+		if(count == 0) return;
+
+		node->counter += count;
+
+		if(node->level == uint32_t(FIXED_DEPTH) && timeline != nullptr){
+			atomicAdd(&timeline->occupiedCells, 1u);
+		}
+	});
+
+	grid.sync();
+
+#ifdef REMO_PROFILE
+	const uint64_t t_end = nanotime();
+
+	if(timeline != nullptr && grid.thread_rank() == 0){
+		timeline->bucketNs      += t_pyramid - t_bucket;
+		timeline->pyramidNs     += t_materialise - t_pyramid;
+		timeline->materialiseNs += t_seed - t_materialise;
+		timeline->seedNs        += t_end - t_seed;
+
+		// One point-proportional pass over the batch, against 3.46 in the
+		// baseline. That single counter is the clearest statement of what this
+		// arm does.
+		timeline->expandIters += 1;
+		timeline->nodesSplit  += splitThisBatch;
+	}
+#endif
+}
+
+#endif
 
 void voxelSampling(
 	Node* root, Point* points, int numPoints,
@@ -680,6 +964,15 @@ void addBatch(
 	auto t_10 = nanotime();
 	REMO_MARK(timeline, remo::kPhaseExpand);
 
+	// The two arms sit inside the same mark pair, so they are directly comparable
+	// at the phase level. expand() is left exactly as it is.
+#ifdef REMO_FIXED_DEPTH
+	expandFixed(points, batchSize,
+		octreeMin, octreeSize,
+		nodes,
+		spillingNodes, numSpillingNodes
+	);
+#else
 	expand(root, points, batchSize,
 		octreeMin, octreeMax, octreeSize,
 		nodes,
@@ -687,6 +980,7 @@ void addBatch(
 		spilledPoints, numSpilledPoints,
 		batchIndex
 	);
+#endif
 
 	grid.sync();
 
@@ -789,20 +1083,30 @@ void kernel_construct(
 	// Per launch, not per cloud: the host reads the timeline after every
 	// construct, so each launch starts from zero. remolod_reset.cu runs only on
 	// cloud reset and cannot do this.
-#ifdef REMO_PROFILE
+	//
+	// Unconditional, unlike the marks it precedes: the counter block carries
+	// nodePoolOverflow and maxPointsPerNode, which are written in every variant.
+	// It is a few dozen stores by one thread, not a clock read in a hot loop.
 	if(timeline != nullptr && grid.thread_rank() == 0){
-		timeline->numMarks      = 0;
-		timeline->overflow      = 0;
-		timeline->batches       = 0;
-		timeline->expandIters   = 0;
-		timeline->nodesSplit    = 0;
-		timeline->pad1          = 0;
-		timeline->spilledPoints = 0;
+		timeline->numMarks         = 0;
+		timeline->overflow         = 0;
+		timeline->batches          = 0;
+		timeline->expandIters      = 0;
+		timeline->nodesSplit       = 0;
+		timeline->maxPointsPerNode = 0;
+		timeline->spilledPoints    = 0;
 		for(uint32_t i = 0; i < remo::REMO_MAX_EXPAND_ITERS; i++){
 			timeline->expandIterNs[i] = 0;
 		}
+		timeline->bucketNs         = 0;
+		timeline->pyramidNs        = 0;
+		timeline->materialiseNs    = 0;
+		timeline->seedNs           = 0;
+		timeline->occupiedCells     = 0;
+		timeline->nodePoolOverflow  = 0;
+		timeline->counterUnderflows = 0;
+		timeline->pad2              = 0;
 	}
-#endif
 
 	if(grid.thread_rank() == 0){
 		*frameStartTimestamp = tStart;
@@ -825,13 +1129,19 @@ void kernel_construct(
 	backlog_targets    = allocator->alloc<Node**>(VOXEL_BACKLOG_CAPACITY * sizeof(Node*));
 	numBacklogVoxels   = allocator->alloc<uint32_t*>(4);
 
-	Node** spillingNodes         =  allocator->alloc<Node**>(100'000 * sizeof(Node*));
+	Node** spillingNodes         =  allocator->alloc<Node**>(SPILLING_NODES_CAPACITY * sizeof(Node*));
 	uint32_t* numSpillingNodes   =  allocator->alloc<uint32_t*>(4);
 
-	Point* spilledPoints = allocator->alloc<Point*>(10'000'000 * sizeof(Point));
+	Point* spilledPoints = allocator->alloc<Point*>(SPILLED_POINTS_CAPACITY * sizeof(Point));
 	uint32_t* numSpilledPoints = allocator->alloc<uint32_t*>(4);
 
 	chunkQueue = allocator->alloc<Chunk**>(sizeof(Chunk*) * 1'000'000);
+
+	// RemoAllocator's uniform-control-flow rule is satisfied because the variant
+	// is chosen at compile time: each variant walks one fixed allocation sequence.
+#ifdef REMO_FIXED_DEPTH
+	cellCount = allocator->alloc<uint32_t*>(uint64_t(FIXED_NUM_CELLS) * sizeof(uint32_t));
+#endif
 
 	grid.sync();
 
@@ -870,7 +1180,20 @@ void kernel_construct(
 
 		uint64_t memCapacity = uniforms.persistentBufferCapacity;
 		uint64_t memUsed = allocator_persistent->offset;
+
+		// The margin has to cover ONE batch's allocations, because it is only
+		// tested between batches and AllocatorGlobal has no bounds check to fall
+		// back on -- it hands out pointers past the end and the write faults. A
+		// fixed-depth batch splits hundreds of nodes at once (525/batch at D=8
+		// against 14 in the baseline), each taking a 256 KB occupancy grid, plus a
+		// 16 KB chunk for every new leaf that takes points. Upstream's 200 MB does
+		// not cover that: D=8 on morro_bay faults in allocatePointChunks' chunk
+		// write, ~200 MB past the end, without ever printing the warning.
+#ifdef REMO_FIXED_DEPTH
+		uint64_t safetyMargin = 1'000'000'000;
+#else
 		uint64_t safetyMargin = 200'000'000;
+#endif
 		bool memCapacityReached = memUsed + safetyMargin >= memCapacity;
 
 		if(memCapacityReached && grid.thread_rank() == 0){
@@ -929,6 +1252,8 @@ void kernel_construct(
 	uint32_t* counter_voxels          = allocator->alloc<uint32_t*>(4);
 	uint32_t* counter_chunks_points   = allocator->alloc<uint32_t*>(4);
 	uint32_t* counter_chunks_voxels   = allocator->alloc<uint32_t*>(4);
+	uint32_t* counter_max_points      = allocator->alloc<uint32_t*>(4);
+	uint32_t* counter_underflows      = allocator->alloc<uint32_t*>(4);
 
 	if(grid.thread_rank() == 0){
 		*counter_inner           = 0;
@@ -938,6 +1263,8 @@ void kernel_construct(
 		*counter_voxels          = 0;
 		*counter_chunks_points   = 0;
 		*counter_chunks_voxels   = 0;
+		*counter_max_points      = 0;
+		*counter_underflows      = 0;
 	}
 	grid.sync();
 
@@ -948,6 +1275,13 @@ void kernel_construct(
 			atomicAdd(counter_leaves, 1);
 			atomicAdd(counter_points, node->numPoints);
 			atomicAdd(counter_chunks_points, (node->numPoints + POINTS_PER_CHUNK - 1) / POINTS_PER_CHUNK);
+			atomicMax(counter_max_points, node->numPoints);
+
+			// The invariant allocatePointChunks depends on, checked where the tree
+			// is already being swept. Both arms: the baseline must report 0 too.
+			if(node->counter < node->numPoints){
+				atomicAdd(counter_underflows, 1);
+			}
 
 			if(node->numPoints > 0){
 				atomicAdd(counter_nonempty_leaves, 1);
@@ -973,5 +1307,14 @@ void kernel_construct(
 		stats->allocatedBytes_momentary  = allocator->offset;
 		stats->allocatedBytes_persistent = allocator_persistent->offset;
 		stats->frameID                   = uniforms.frameCounter;
+	}
+
+	// The direct measure of a too-shallow fixed depth: a depth-D cell holding
+	// 200k points stays one leaf, and only this says so. Stats is vendored from
+	// SimLOD and has nowhere to put it, so it rides the timeline's counter block
+	// rather than growing kernel_construct a twelfth argument.
+	if(grid.thread_rank() == 0 && timeline != nullptr){
+		timeline->maxPointsPerNode  = *counter_max_points;
+		timeline->counterUnderflows = *counter_underflows;
 	}
 }

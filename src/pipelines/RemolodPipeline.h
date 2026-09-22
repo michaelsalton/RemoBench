@@ -41,6 +41,13 @@ public:
 	// of the construct kernel, which is what emits the phase marks.
 	void setPhaseTimings(bool on) { m_phaseTimings = on; }
 
+	// Likewise before initPrograms(): the depth is a compile-time constant, so it
+	// selects a compiled variant of the construct kernel and cannot be a GUI
+	// control. 0 leaves the default, iterative expand() in place.
+	// See plans/07_HardCodingExpandStage.md.
+	void setFixedDepth(int depth) { m_fixedDepth = depth; }
+	int fixedDepth() const { return m_fixedDepth; }
+
 private:
 	void readStats();
 	void ensureScratch(int width, int height);
@@ -98,6 +105,17 @@ private:
 	uint64_t m_phaseSpilledPoints = 0;
 	uint64_t m_phaseNodesSplit = 0;
 	uint32_t m_phaseOverflow = 0;
+
+	// The fixed-depth arm. m_nodePoolOverflow and m_occupiedCells come off the
+	// timeline's counter block, which is read in every variant.
+	int m_fixedDepth = 0;
+	double m_fixedBucketMs = 0.0;
+	double m_fixedPyramidMs = 0.0;
+	double m_fixedMaterialiseMs = 0.0;
+	double m_fixedSeedMs = 0.0;
+	uint64_t m_occupiedCells = 0;
+	bool m_nodePoolOverflow = false;
+	uint32_t m_counterUnderflows = 0;
 
 	uint32_t m_batchesConsumed = 0;
 	uint32_t m_batchesTotal = 0;

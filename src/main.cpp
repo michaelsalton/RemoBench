@@ -172,6 +172,12 @@ void printUsage() {
 		"                      break RemoLOD's construct kernel down by phase (expand,\n"
 		"                      voxelSampling, insertPoints, ...). Compiles the kernel\n"
 		"                      with -DREMO_PROFILE; off, the device code is unchanged.\n"
+		"  --remolod-fixed-depth <n>\n"
+		"                      build RemoLOD's octree by pre-splitting to a fixed\n"
+		"                      depth n (1..8) instead of counting and splitting\n"
+		"                      iteratively. An oracle arm: the depth is free, so this\n"
+		"                      measures the ceiling on what a depth predictor could\n"
+		"                      save. Compiles the kernel with -DREMO_FIXED_DEPTH=n.\n"
 		"  --remolod-no-accum  build RemoLOD's octree without the per-node accumulator.\n"
 		"                      The pass mutates no tree state, so the structural counts\n"
 		"                      must be identical with it on and off -- that is its\n"
@@ -305,6 +311,20 @@ int main(int argc, char** argv) {
 			options.remolodNoAccum = true;
 		} else if (arg == "--remolod-phase-timings") {
 			options.remolodPhaseTimings = true;
+		} else if (arg == "--remolod-fixed-depth") {
+			std::string n;
+			if (!takeArg(argc, argv, i, "--remolod-fixed-depth", &n)) return 2;
+			options.remolodFixedDepth = std::atoi(n.c_str());
+			// 9 is 613 MB of cell counters against a 512 MB momentary buffer, and
+			// its occupancy grids exceed the card. The kernel static_asserts the
+			// same range; this is so the refusal is a message and not a compile
+			// error in a hot-reloaded kernel.
+			if (options.remolodFixedDepth < 1 || options.remolodFixedDepth > 8) {
+				fprintf(stderr,
+				        "remobench: --remolod-fixed-depth takes 1..8, got '%s'\n",
+				        n.c_str());
+				return 2;
+			}
 		} else if (!arg.empty() && arg[0] != '-') {
 			options.files.push_back(arg);
 		} else {

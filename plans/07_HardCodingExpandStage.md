@@ -438,7 +438,99 @@ pipelines, the shared rasteriser, the loader, `TimingScopes::build`, and
 
 ## 12. What actually landed
 
-*(Reserved. Records deviations from §3 and §6, and where this plan was wrong.)*
+Stages 1-3 are done. The measurements are in
+[wiki/04_FixedDepthFindings.md](../wiki/04_FixedDepthFindings.md); this section records
+only where the plan was wrong.
+
+**The headline, against §1's question.** At the best depth the arm is **+42% construct
+MP/s** (877 vs 617 on morro_bay 36M, RTX 5080, strict, accumulator off,
+`--device-budget 9G`, five runs). `expand` falls 24.56 -> 10.94 ms, a saving of 23.2% of
+construct, which is the 21.5% this plan put under test. The curve is the U §5 predicted:
+D=5 +33%, **D=6 +42%**, D=7 -7%, D=8 -62% and unable to finish the cloud.
+
+### Where the saving actually comes from
+
+**The bound is confirmed and is the largest single term.** Deleting the re-counts is
+-9.46 ms, **55%** of the 17.34 ms the arm saves. `plans/05`'s prediction was right about
+what it measured; the baseline reproduces it phase for phase, and its structural
+counters came out identical (37 batches, 3.46 iters/batch, 233,070 spilled pts/batch,
+14.0 nodes split/batch). The one shift is that the re-counts are 16.1% of construct in
+this session against 21.5% there -- the bottom edge of `plans/05`'s own 16.4-24.4%
+range, and §6 of `wiki/03` already says why the millisecond split moves.
+
+**What the plan got wrong is that the ceiling is higher than the bound, not lower.**
+`plans/05` §2 recorded counting iteration 0 as irreducible: "you still must count once
+to place points". True, but it does not have to *descend*. The analytic index cut that
+pass by 61% (11.20 -> 4.37 ms), a further -6.83 ms -- 39% of the saving, on a pass the
+bound had written off. Against that, the pre-split costs +2.67 ms more than the
+splitting it replaces. So the ceiling is "the re-counts, plus the descent leaving the
+first count, minus what pre-splitting costs".
+
+§4's contamination warning was right and the numbers are reported separately: spilling
+vanished entirely (233,070 pts/batch, `spilled pts/batch` is 0 at every D), which shows
+up in `voxelSampling` and `insertPoints` outside `expand`, and `insertVoxels` pays part
+of it back because a deeper tree holds more voxels.
+
+**§5's named risk did not materialise.** `allocPointChunks` got *cheaper* at every
+depth -- 2.89 -> 0.87 ms at D=6 with 2.5x the nodes -- because its cost is the
+linked-list walk over each leaf's chunks, and a fixed-depth leaf is small. What turns
+the curve instead is `materialise` (O(numNodes x D), 30.48 ms at D=8), `pyramid`
+(O(8^D), 7.67 ms at D=8), and the voxel count. At the shallow end D=5's `insertPoints`
+is +10.10 ms on its own, because a 145k-point leaf is a 145-chunk list walked from the
+head per point.
+
+### Deviations from §3 and §6
+
+- **The cell index is masked, not clamped** (§3.1). A point on `boxMax` quantises to
+  `2^MAX_DEPTH`, and the descent absorbs that in its per-level `& 1`, which *wraps* it
+  to cell 0. Clamping to the last cell left 30 leaves with `counter < numPoints` and
+  `allocatePointChunks` under-allocating them. The index must be bit-for-bit what the
+  descent computes, whatever the descent computes.
+- **The node pool check needed a second half** (§3.4). `doSplitting`'s grid-zeroing pass
+  still dereferenced the refused node's `grid`, which the refusal had left null, so the
+  safety check was itself a fault until that pass learned to skip refused nodes. It also
+  clamps `numNodes` back to the pool, because every later pass sweeps `[0, numNodes)`
+  and the refused `atomicAdd` had already moved it past the end.
+- **`DeviceTimeline` is 4336 bytes, not the 4328 §6 predicted.** `maxPointsPerNode` took
+  the existing `pad1` and cost nothing; the extra 8 is a seventh counter,
+  `counterUnderflows`, plus its padding. §9 asks for `counter >= numPoints` per leaf and
+  nothing else could report it: the kernel's only complaint goes through
+  `CudaPrint::print()`, which returns on its first line. It caught the masking bug
+  above, which is the whole argument for it.
+- **Upstream's 200 MB memory safety margin is not enough for this arm.** It is tested
+  only between batches and `AllocatorGlobal` has no bounds check, so one fixed-depth
+  batch -- 610 splits at D=8, 256 KB of grid each plus a 16 KB chunk per new leaf --
+  walks past the end of the store and faults in `allocatePointChunks` with no warning
+  printed. The fixed arm uses 1 GB and stops cleanly. Found by D=8, via
+  `compute-sanitizer`.
+- **The arm cannot be sized at 48 B/pt.** `RemolodPipeline::allocate` gives the fixed arm
+  what the shared budget leaves, because the grid ratchet is not a per-point cost. At
+  D=7 the baseline's coefficient stopped the build at 58% of the cloud, and a truncated
+  run is not comparable to a complete one.
+- **§3.3's memory ceiling is the wrong ceiling.** `cellCount` at D=8 is 76.7 MB and fits
+  as predicted; what actually stops D=8 is the occupancy-grid ratchet in the persistent
+  store -- it truncates at 80.1% of 36M with a 9 GB budget. D=9 is still refused, in the
+  kernel's `static_assert` and in the flag parse.
+- **`--dump-after 8` is not enough for a slow arm.** D=8's first figures said "55%
+  ingested"; that was the frame count, not memory. The protocol in §8 needs
+  `--dump-after 40`.
+- **`spillingNodes` is bounded.** The materialise pass can nominate more than the
+  100,000-entry list holds, so the write is guarded and the overflow reported; a node
+  that does not fit stays a leaf above D and pass 4 still gives it the whole subtree's
+  count from the pyramid.
+
+### What was verified
+
+The default arm still builds **4,137 nodes / 12,742,751 voxels**, identical across five
+runs and still identical to `simlod`; `cudalod` is 2,252 / 12,742,500; `check-vendored`
+is 9 byte-identical kernels. Every arm reproduced its counts exactly in all five runs.
+The node pool overflow path was exercised by temporarily rebuilding with
+`MAX_NODES_CAPACITY = 20'000`: the count pinned at 20,000, `node pool OVERFLOW` was
+reported, the leaf-counter invariant held, and nothing faulted.
+
+**Stage 4 remains open** and is unchanged by this: the ceiling is real, but the depth
+that reaches it is data-dependent (6 for morro_bay at this budget, and nothing here says
+that transfers), and a predictor that costs what the counting cost reaches none of it.
 
 ---
 
