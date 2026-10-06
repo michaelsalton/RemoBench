@@ -6,10 +6,10 @@ kernel does, how often it runs, what it is allowed to touch, and which parts exi
 [plans/01_NoveltyAssessment.md](../plans/01_NoveltyAssessment.md) says why this shape is the
 research claim.
 
-Everything here is **RemoLOD's** — `kernels/remolod/`. The `simlod` and `cudalod` pipelines
-are external comparison baselines, vendored byte-identical and never edited; RemoLOD forked
+Everything here is **RemoLOD's** — `kernels/remolod/`. The `simlod` pipeline
+is the external comparison baseline, vendored byte-identical and never edited; RemoLOD forked
 what it needed out of SimLOD and changes the fork. See
-[CLAUDE.md](../CLAUDE.md#the-four-pipelines-and-which-ones-you-may-touch).
+[CLAUDE.md](../CLAUDE.md#the-three-pipelines-and-which-ones-you-may-touch).
 
 The first three kernels exist. The last two are the project.
 

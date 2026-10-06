@@ -1,7 +1,7 @@
 # Programs this pipeline compiles and links, one per line.
 #
 # Three, matching upstream: reset, construct, render. Each is a standalone translation
-# unit here (unlike CudaLOD's, which need lib.cu linked in).
+# unit here.
 reset.cu
 progressive_octree_voxels.cu
 simlod_render.cu

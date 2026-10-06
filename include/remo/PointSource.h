@@ -70,7 +70,7 @@ class PointSource {
 public:
 	// Whole: the entire cloud sits in device memory and batch B is at base + B * slot.
 	//        Required by any consumer that keeps a pointer into the cloud across
-	//        frames (flat) or reads it all at once (cudalod).
+	//        frames (flat) or reads it all at once.
 	// Stream: a fixed-depth ring the host refills behind the consumer. The input cost
 	//        stops scaling with the cloud, which is what lets a cloud larger than the
 	//        card's memory be built at all.

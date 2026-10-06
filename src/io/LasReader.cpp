@@ -204,8 +204,8 @@ bool readLasHeader(const std::string& path, LasHeaderInfo& info, std::string* er
 //
 // The bounds-only mode is what makes streaming possible at all. The box has to be final
 // before the first batch is uploaded -- boxSize sizes the octree root cube, and growing
-// it mid-stream invalidates every node already built, silently, because CudaLOD clamps
-// the cell index and SimLOD's float->uint32 conversion saturates. So the two fixups
+// it mid-stream invalidates every node already built, silently, because SimLOD's
+// float->uint32 conversion saturates. So the two fixups
 // loadLasCloud used to do after reading everything (re-read against a corrected
 // translation, grow the box past the header) happen against a coordinate pass instead.
 //

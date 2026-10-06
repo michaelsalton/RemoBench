@@ -9,7 +9,7 @@
 #   file the running program isn't reading. Symlink instead.
 #
 # Upstream SimLOD copies (CMakeLists.txt:112-142) and has a broken
-# symlink-detection branch; the CudaLOD Linux port symlinks, which is correct.
+# symlink-detection branch.
 #
 # We also bake an absolute path into the binary (REMOBENCH_KERNEL_DIR) so a build
 # run from anywhere still finds its kernels. The symlink is a convenience for

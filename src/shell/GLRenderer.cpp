@@ -98,11 +98,6 @@ bool GLRenderer::init(const std::string& title, int width, int height,
                       std::string* err) {
 	glfwSetErrorCallback(glfwErrorCallback);
 
-	if (!glfwInit()) {
-		if (err) *err = "glfwInit failed (no display?)";
-		return false;
-	}
-
 #ifdef GLFW_PLATFORM
 	const char* platform = std::getenv("REMOBENCH_GLFW_PLATFORM");
 	if (!platform || std::string(platform) == "x11") {
@@ -111,6 +106,11 @@ bool GLRenderer::init(const std::string& title, int width, int height,
 		}
 	}
 #endif
+
+	if (!glfwInit()) {
+		if (err) *err = "glfwInit failed (no display?)";
+		return false;
+	}
 
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);

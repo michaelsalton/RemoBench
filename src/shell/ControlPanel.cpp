@@ -132,8 +132,7 @@ void App::drawControlPanel() {
 		ImGui::SetTooltip(
 			"Projected node extent, in pixels, above which a node is subdivided.\n"
 			"A single shared metric so that 'both at the same LOD' means the same\n"
-			"cut: SimLOD's native test is in world units (dataset-dependent) and\n"
-			"CudaLOD's is angular but not viewport-calibrated.");
+			"cut: SimLOD's native test is in world units (dataset-dependent).");
 	}
 
 	ImGui::SliderInt("point size", &m_settings.pointSize, 1, 8);
@@ -163,8 +162,7 @@ void App::drawControlPanel() {
 			"and its contents match.\n"
 			"\n"
 			"This is the LOD cut itself rather than an inference from it:\n"
-			"SimLOD emits a disjoint frontier, so its boxes tile; CudaLOD\n"
-			"marks parents and children both visible, so its boxes nest.\n"
+			"SimLOD emits a disjoint frontier, so its boxes tile.\n"
 			"`flat` has no tree and draws none.");
 	}
 

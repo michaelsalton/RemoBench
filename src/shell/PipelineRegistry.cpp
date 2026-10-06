@@ -163,12 +163,6 @@ std::string PipelineRegistry::unsupportedReason(const PipelineInfo& info,
 		return buf;
 	}
 
-	if (meta.isSyntheticFixture && info.id == "cudalod") {
-		return "CudaLOD's split kernel faults on the synthetic fixture's point "
-		       "distribution (not yet root-caused). Load a real .simlod/.las cloud "
-		       "to use this pipeline.";
-	}
-
 	// The 50M ceiling, now conditional rather than absolute.
 	//
 	// It was never a property of SimLOD: kernel_construct reads batch N from slot

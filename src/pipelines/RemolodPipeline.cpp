@@ -44,7 +44,7 @@ RemolodPipeline::~RemolodPipeline() { release(); }
 PipelineInfo RemolodPipeline::info() const {
 	PipelineInfo info;
 	info.id = "remolod";
-	info.displayName = "RemoLOD (detail-aware)";
+	info.displayName = "RemoLOD";
 	info.progressive = true;
 	// Streams, like the fork it came from. RemoLOD raised BATCH_STREAM_SIZE to 8192 only
 	// to make a non-wrapping resident feed addressable past 50M; with a real ring that

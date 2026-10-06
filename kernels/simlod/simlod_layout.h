@@ -19,8 +19,7 @@
 //
 // NO <cstdint>, AND NO IMPORTED TYPE NAMES. NVRTC has no libstdc++, and CCCL's
 // cuda::std::uint32_t is a different type from the `typedef unsigned int uint32_t` that
-// SimLOD's utils.h.cu puts in scope -- a conflicting typedef, which is the same trap
-// patches/cudalod-linux-port.patch exists to fix. Spelling the builtin types out sidesteps
+// SimLOD's utils.h.cu puts in scope -- a conflicting typedef. Spelling the builtin types out sidesteps
 // the question on both sides.
 #pragma once
 

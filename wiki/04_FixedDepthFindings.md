@@ -315,7 +315,6 @@ Acceptance, all on the final binary:
 |---|---|
 | default RemoLOD structural counts | **4,137 / 12,742,751 — unchanged** |
 | `simlod` | 4,137 / 12,742,751 — still identical to the default arm |
-| `cudalod` | 2,252 / 12,742,500 — matches `bench/reference/` |
 | `make check-vendored` | 9 kernels byte-identical |
 | `make check-kernels` | 10 programs, 0 failed |
 | fixed arm, points ingested | equals the baseline's, 36,200,706, at D = 5,6,7 |

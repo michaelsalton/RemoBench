@@ -23,10 +23,9 @@ void reportDeadContextAndExit(CUresult result, const char* what) {
 	        "  - a device-side buffer overrun. The bump allocators have no bounds check\n"
 	        "    on the reference kernels' side; RemoBench's own (kernels/shared/remo_alloc.cuh)\n"
 	        "    reports overflow through DeviceDiagnostics instead.\n"
-	        "  - an input distribution the pipeline cannot handle. CudaLOD's split runs\n"
-	        "    once at a fixed depth and its capacities are unchecked, so a degenerate\n"
-	        "    cloud (coplanar or duplicated points) can walk off the end.\n"
-	        "  - too small a device budget for the chosen sampling strategy.\n"
+	        "  - an input distribution the pipeline cannot handle: a degenerate cloud\n"
+	        "    (coplanar or duplicated points) can overrun an unchecked capacity.\n"
+	        "  - too small a device budget.\n"
 	        "\n"
 	        "To narrow it down:\n"
 	        "  compute-sanitizer ./build/remobench <same arguments>\n",

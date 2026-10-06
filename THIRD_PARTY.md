@@ -1,7 +1,7 @@
 # Third-party code
 
-RemoBench is a research tool built on two prior implementations by Markus Schütz
-(TU Wien). It vendors code from both. This file records what came from where,
+RemoBench is a research tool built on SimLOD, a prior implementation by Markus Schütz
+and Lukas Herzberger (TU Wien). It vendors code from it. This file records what came from where,
 under what licence, and — the part that vendoring usually gets wrong — *what we
 did with it*.
 
@@ -22,28 +22,24 @@ byte for byte. `bench/check_vendored.sh` — `make check-vendored` — asserts t
 vendored kernel, and explanatory notes live in `kernels/simlod/VENDORED.md` rather than in the
 files, so "is this still upstream?" stays a `diff` and not a judgement call.
 
-That matters beyond licensing hygiene: `simlod` and `cudalod` are **external comparison
-baselines**, and they are only worth having while they still reproduce their published numbers
+That matters beyond licensing hygiene: `simlod` is an **external comparison
+baseline**, and it is only worth having while it still reproduces its published numbers
 against `bench/reference/`. RemoLOD — this project's own pipeline — forks what it needs into
 `kernels/remolod/` and changes the fork. `kernels/CudaPrint/` sits at that path, rather than
 inside `kernels/simlod/`, so that upstream's `#include "../CudaPrint/CudaPrint.cuh"` resolves
 unchanged; mirroring the upstream layout was cheaper than carrying an edited include line.
 
-## Upstream projects
+## Upstream project
 
 | project | licence | copyright | submodule |
 | ------- | ------- | --------- | --------- |
 | [SimLOD](https://github.com/m-schuetz/SimLOD) | MIT | 2023 Markus Schütz and Lukas Herzberger | `external/SimLOD` (branch `ubuntu`) |
-| [CudaLOD](https://github.com/m-schuetz/CudaLOD) | MIT | 2022 Markus Schütz | `external/CudaLOD` (branch `main`) |
 
-Both are MIT, so copying with attribution is unambiguously permitted. CudaLOD's
-`LICENSE.md` additionally notes that some shader files are adapted from
-[three.js](https://github.com/mrdoob/three.js) (also MIT); RemoBench does not use
-those files.
+It is MIT, so copying with attribution is unambiguously permitted.
 
-Neither submodule is copied wholesale. They stay as submodules pinned to exact
-commits — referenced, not absorbed — which is the cleanest provenance story
-available. `patches/` holds the Linux/CUDA-13 fixes applied to them at build time.
+The submodule is not copied wholesale. It stays a submodule pinned to an exact
+commit — referenced, not absorbed — which is the cleanest provenance story
+available. `patches/` holds the Linux/CUDA-13 fixes applied to it at build time.
 
 ## Libraries
 
@@ -62,7 +58,7 @@ Referenced in place from `external/SimLOD/libs/` (see the provenance rule in
 
 ### Why GLFW is our own submodule rather than referenced
 
-`external/*/libs/glfw` contains headers plus a prebuilt `msvc2017_x64` `.lib` —
+`external/SimLOD/libs/glfw` contains headers plus a prebuilt `msvc2017_x64` `.lib` —
 useless on Linux. SimLOD therefore `FetchContent`s GLFW 3.3.2 at configure time,
 which needs network access on every fresh configure and forces
 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`, because 3.3.2 declares a pre-3.5 minimum
@@ -96,10 +92,9 @@ parallel decode.
 
 ### `include/utils.h` (Morton encoding) — quarantined
 
-Present and byte-identical in **both** submodules, and licensed
+Present in the SimLOD submodule, and licensed
 [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) (see the
-comment at the top of the file, and the same code inlined at
-`external/CudaLOD/modules/simlod/SimLOD.h:32-49`).
+comment at the top of the file).
 
 It must not be copied into RemoBench:
 
@@ -119,7 +114,3 @@ A negative entry is as valuable as a positive one; this is why it is recorded.
 | ---- | --- |
 | `SimLOD/modules/CudaPrint/**` | a no-op on both host and device, yet threaded through all three kernel signatures |
 | `SimLOD/modules/progressive_octree/progressive_octree_mno.cu` | stale; would not compile against the current `Uniforms`. Reference implementation only |
-| `CudaLOD/modules/compute/**` | a second, unrelated GL-compute renderer that never feeds the CUDA LOD builder |
-| `CudaLOD/modules/simlod/sampling_cuda/**`, `voxel_sampling_gentree/**` | earlier generations, not instantiated upstream |
-| `CudaLOD/libs/openvr/**` | Windows-only binary; VR is off by default and the code paths never execute |
-| ~9 dead `voxelize_*.cu` variants, `split_countsort`, `split_hashmap` | superseded precursors; upstream marks one "prototyping, dont use" |

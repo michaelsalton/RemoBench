@@ -4,8 +4,7 @@
 # # comments are ignored. Paths are relative to this directory.
 #
 # `remobench --check-kernels` reads these files so it links modules the way the pipeline
-# actually does. That matters because not every .cu is a standalone translation unit --
-# see kernels/cudalod/programs.txt for the case that forced this.
+# actually does. That matters because not every .cu is a standalone translation unit.
 #
 # Four, where SimLOD has three. remolod_accum.cu is the extra one: the accumulator is a
 # separate LAUNCH rather than a subpass inside the octree kernel, which is what lets

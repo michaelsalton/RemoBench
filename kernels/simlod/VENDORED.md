@@ -11,9 +11,9 @@ and becomes a judgement call. That judgement call is what let the accumulator ho
 
 ## Why byte-identity matters
 
-`simlod` and `cudalod` are **external comparison pipelines**. They are worth having only
-while they still reproduce their published numbers against `bench/reference/`. An edit to
-either — however well intentioned — destroys the baseline the research is measured against.
+`simlod` is an **external comparison pipeline**. It is worth having only
+while it still reproduces its published numbers against `bench/reference/`. An edit to
+it — however well intentioned — destroys the baseline the research is measured against.
 
 RemoLOD is the pipeline that gets to change things. When it needs behaviour these kernels do
 not have, it **forks** the file into `kernels/remolod/`. See
@@ -41,7 +41,7 @@ than the hook was.
 | file | what it is |
 | --- | --- |
 | `progressive_octree_voxels.cu` | `kernel_construct`: inserts up to 20 uploaded 1M-point batches into the LIVE octree per launch, under a 10 ms device-side wall-clock budget (`%%globaltimer`), advancing the persistent cursor `stats->batchletIndex`. Nothing is rebuilt — the tree is rendered while it is still being inserted into. `addBatch()` is six phases separated by `grid.sync()`: expand (doCounting ↔ doSplitting until no node overflows) → voxelSampling → allocate point chunks → allocate voxel chunks → insert points → insert voxels → stats. |
-| `structures.cuh` | `Node` / `Chunk` / `OccupancyGrid`, and the tunables. Leaves hold original points and inner nodes hold voxels, both as a **linked list** of 1000-point `Chunk`s — not a contiguous slice like CudaLOD. That is why the shared rasteriser walks samples through a template Walker; see `kernels/shared/remo_draw.cuh`. |
+| `structures.cuh` | `Node` / `Chunk` / `OccupancyGrid`, and the tunables. Leaves hold original points and inner nodes hold voxels, both as a **linked list** of 1000-point `Chunk`s — not a contiguous slice like `flat`. That is why the shared rasteriser walks samples through a template Walker; see `kernels/shared/remo_draw.cuh`. |
 | `reset.cu` | Clears the octree and initialises the persistent allocator in place. Factored out of the construct kernel upstream, which is why `progressive_octree_mno.cu` still tries to reset inline via a `Uniforms` field that no longer exists. |
 | `utils.h.cu` | `processRange`, `nanotime`, and the two bump allocators. `Allocator` is **non-atomic by design**: every thread walks the identical allocation sequence so all threads derive identical pointers with no atomics. It requires uniform control flow, and it has **no capacity and no bounds check** — which is why upstream's momentary allocator quietly hands out ~409 MB from a 300 MB buffer. Kept as-is so the port stays verifiable; the host bounds the damage by sizing the buffers from the actual allocation sum. Our own kernels use `kernels/shared/remo_alloc.cuh`, which does check. |
 | `HostDeviceInterface.h` | SimLOD's own host/device contract: `Uniforms` and `Stats`. Deliberately **not** merged into `remo/HostDeviceCommon.h` — rewriting the struct the reference kernels read is how a port silently stops reproducing its published numbers. Several `Uniforms` fields are plumbed but read by no kernel (`LOD`, `doProgressive`, `colorWhite`, `updateStats`, `enableEDL`, `edlStrength`); RemoBench drives shading from `SharedUniforms` instead, so those stay unused rather than becoming placebo controls. |

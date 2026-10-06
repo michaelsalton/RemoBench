@@ -9,11 +9,11 @@ project(remobench LANGUAGES C CXX)
 #   remobench may reference external/*/libs/** only. It must never #include a file
 #   that patches/*.patch modifies.
 #
-# The two research submodules (external/SimLOD, external/CudaLOD) are patched at
-# build time by `make simlod` / `make cudalod` and are declared `ignore = dirty`,
-# so their working trees are expected to be modified. Building against a file
+# The research submodule (external/SimLOD) is patched at build time by
+# `make simlod` and is declared `ignore = dirty`, so its working tree is
+# expected to be modified. Building against a file
 # whose content depends on patch-application state is not reproducible. Their
-# libs/ directories are never touched by either patch, so those are safe to
+# libs/ directory is never touched by the patch, so those are safe to
 # reference in place; everything else we need is copied into this repo with
 # attribution (see THIRD_PARTY.md).
 #
@@ -60,7 +60,6 @@ add_executable(remobench
 	src/io/LazReader.cpp
 	src/pipelines/FlatPipeline.cpp
 	src/pipelines/RemolodPipeline.cpp
-	src/pipelines/CudalodPipeline.cpp
 	src/pipelines/SimlodPipeline.cpp)
 
 target_include_directories(remobench PRIVATE include src)

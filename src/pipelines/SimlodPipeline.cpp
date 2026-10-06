@@ -45,7 +45,7 @@ SimlodPipeline::~SimlodPipeline() { release(); }
 PipelineInfo SimlodPipeline::info() const {
 	PipelineInfo info;
 	info.id = "simlod";
-	info.displayName = "SimLOD (progressive)";
+	info.displayName = "SimLOD";
 	info.progressive = true;
 	// kernel_construct consumes nothing but BatchView, so it never needed the cloud
 	// resident -- upstream streams into it, and holding the whole cloud was RemoBench's

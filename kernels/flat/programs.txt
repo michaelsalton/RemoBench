@@ -4,6 +4,5 @@
 # # comments are ignored. Paths are relative to this directory.
 #
 # `remobench --check-kernels` reads these files so it links modules the way the pipeline
-# actually does. That matters because not every .cu is a standalone translation unit --
-# see kernels/cudalod/programs.txt for the case that forced this.
+# actually does. That matters because not every .cu is a standalone translation unit.
 flat_render.cu

@@ -3,11 +3,6 @@
 	url = git@github.com:m-schuetz/SimLOD.git
 	branch = ubuntu
 	ignore = dirty
-[submodule "external/CudaLOD"]
-	path = external/CudaLOD
-	url = git@github.com:m-schuetz/CudaLOD.git
-	branch = main
-	ignore = dirty
 [submodule "external/glfw"]
 	path = external/glfw
 	url = https://github.com/glfw/glfw.git

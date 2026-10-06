@@ -23,7 +23,7 @@ FlatPipeline::~FlatPipeline() { release(); }
 PipelineInfo FlatPipeline::info() const {
 	PipelineInfo info;
 	info.id = "flat";
-	info.displayName = "Flat (no LOD)";
+	info.displayName = "Flat";
 	info.progressive = false;
 	info.needsWholeCloudResident = true;
 	// Flat allocates nothing per point: the resident cloud is its whole cost, and the

@@ -15,10 +15,10 @@ vendored device code kept byte-identical to upstream.
 RemoBench is a single-window point cloud viewer whose LOD algorithm is a **swappable plugin**.
 The shell owns everything that is not LOD — window, camera, loader, device-memory budget,
 software rasteriser, timing — and hands all of it, unchanged, to whichever pipeline is
-active. Four pipelines exist: `flat` (no LOD, the control), `remolod` (RemoBench's own, and
-what the research is about), `cudalod` (batch build) and `simlod` (progressive build). The
-last two are **external comparison baselines**, vendored byte-identical and never edited --
-RemoLOD forks what it needs out of them instead. Device code is compiled at **runtime** by NVRTC, so kernels
+active. Three pipelines exist: `flat` (no LOD, the control), `remolod` (RemoBench's own, and
+what the research is about) and `simlod` (progressive build). `simlod` is the **external
+comparison baseline**, vendored byte-identical and never edited -- RemoLOD forks what it needs
+out of it instead. Device code is compiled at **runtime** by NVRTC, so kernels
 hot-reload on save. The whole arrangement exists so that a difference between two pipelines
 is attributable to the LOD algorithm and nothing else.
 
@@ -26,8 +26,8 @@ is attributable to the LOD algorithm and nothing else.
 flowchart TB
     shell["src/shell/<br/>App — window · orbit camera · ImGui panel<br/>point source · device budget · GpuProfiler"]
     contract["include/remo/<br/>ILodPipeline, the contract · PipelineRegistry switches<br/>DeviceBudget · PipelineStats · TimingScopes · SharedUniforms cross here"]
-    pipes["src/pipelines/<br/>RemolodPipeline · CudalodPipeline · SimlodPipeline<br/>host side: allocate, launch, read back stats"]
-    device["kernels/flat · kernels/remolod · kernels/cudalod · kernels/simlod<br/>per-pipeline device code: LOD construction<br/>+ the SELECTION pass, which emits a DrawList"]
+    pipes["src/pipelines/<br/>FlatPipeline · RemolodPipeline · SimlodPipeline<br/>host side: allocate, launch, read back stats"]
+    device["kernels/flat · kernels/remolod · kernels/simlod<br/>per-pipeline device code: LOD construction<br/>+ the SELECTION pass, which emits a DrawList"]
     shared["kernels/shared/<br/>allocators · math and frustum · packed-uint64 framebuffer<br/>rasteriser · EDL · wireframe"]
 
     shell -- "FrameContext<br/>uniforms, surface, profiler" --> contract
@@ -109,16 +109,16 @@ need an identity and a level, and the wireframe needs the box. It also carries
 `voxelOctantMask`: an inner node's voxels summarise its whole subtree, so octants where a
 child is *also* being drawn are redundant.
 
-> The mask's bit order is the shared convention — **x is bit 0, y bit 1, z bit 2.** CudaLOD
-> indexes its children in exactly the reverse order, so its selection pass permutes. Getting
-> that wrong renders as large holes while the tree is provably correct.
+> The mask's bit order is the shared convention — **x is bit 0, y bit 1, z bit 2.** A selection
+> pass whose tree indexes children in a different order must permute. Getting that wrong
+> renders as large holes while the tree is provably correct. No current pipeline emits a
+> partial mask: both octree pipelines emit a disjoint frontier and pass `0xFF`.
 
-Sample storage differs irreconcilably between the two references:
+Sample storage differs irreconcilably between the pipelines:
 
 | pipeline | leaf points | inner-node voxels | walker |
 | --- | --- | --- | --- |
 | `flat` | contiguous slice of the input array | none | `RemoContiguousWalker` |
-| `cudalod` | contiguous slice of one globally counting-sorted array | contiguous | `RemoContiguousWalker` |
 | `simlod` | linked list of 1000-point `Chunk`s | separate chunk list | `RemoChunkedWalker<Chunk, 1000>` |
 
 Rather than flatten to spans (~160 MB of descriptors rebuilt per frame) or branch on a
@@ -164,7 +164,7 @@ flowchart LR
 - `timingScopes()` declares the profiler scope names — see §6.
 
 Each pipeline keeps its **own** device-side stats struct as close to upstream as possible
-(SimLOD's `Stats`, CudaLOD's `Results`) and translates into `PipelineStats` on the host.
+(SimLOD's `Stats`) and translates into `PipelineStats` on the host.
 Rewriting those device structs to a common shape would mean editing the kernels being
 validated.
 
@@ -206,9 +206,9 @@ Everything else — header scan, loader threads, per-slot `batchSizes[]`, `numBa
 — is identical, which is why the device code needed no change to go from one to the other.
 The producer refills only within the window the consumer's `stats->batchletIndex` opens, so
 a slot is never overwritten before the tree has read it; that invariant is checked on the
-host, because its failure has no device-side symptom at all. `flat` and `cudalod` stay on
-`Mode::Whole` because they genuinely need residency — one caches the device pointer across
-frames, the other reads the whole cloud in two launches.
+host, because its failure has no device-side symptom at all. `flat` stays on
+`Mode::Whole` because it genuinely needs residency — it caches the device pointer across
+frames.
 
 Ingest is synchronous: the refill is a blocking copy on the render thread. That is enough
 to build a cloud far larger than the device budget, and **not** the paper's
@@ -235,7 +235,7 @@ from: `readSimlodRange` / `readLasRange` fill one ring slot, and `readSimlodBoun
 `readLasBounds` walk the coordinates alone. The bounds pass exists because the box must be
 final before the first upload — `boxSize` sizes the octree root cube, so growing it
 mid-stream invalidates every node already built, and nothing on the device would complain
-(CudaLOD clamps the cell index, SimLOD's float→uint32 conversion saturates, so out-of-box
+(SimLOD's float→uint32 conversion saturates, so out-of-box
 points pile into cell 0 rather than faulting). It replaces the two-attempt re-read
 `loadLasCloud` used to do, which a streaming loader cannot afford. `.laz` has no cheap
 coordinate pass — laszip decodes sequentially with no seek — so it stays whole-cloud
@@ -243,20 +243,20 @@ resident.
 
 ---
 
-## 4. The four pipelines side by side
+## 4. The three pipelines side by side
 
-| | `flat` | `remolod` | `cudalod` | `simlod` |
-| --- | --- | --- | --- | --- |
-| role | control / ground truth | **ours — the research** | comparison, batch | comparison, progressive |
-| may be edited | rarely | yes, freely | **no** | **no** |
-| residency | whole cloud required | 50-slot wrapping ring | whole cloud required | 50-slot wrapping ring |
-| build | nothing; latches a pointer | one bounded launch per frame + accumulate | 2 cooperative launches, one shot | one bounded launch per frame |
-| structure | none | octree, 128³ 1-bit occupancy grid + `NodeAccum[]` | octree, counting-sort split to depth 12 | octree, 128³ 1-bit occupancy grid per inner node |
-| sample storage | array slices | chunk lists | contiguous slices | chunk lists |
-| selection | every 64k slice is visible | disjoint frontier, no mask needed | parent *and* children visible, octant-masked | disjoint frontier, no mask needed |
-| draw list capacity | 32,768 | 131,072 | 65,536 | 131,072 |
-| point ceiling | fits in budget | none | fits in budget | none |
-| scopes | `flat.render` | `remolod.reset`, `remolod.construct`, `remolod.accumulate`, `remolod.render` | `cudalod.split`, `cudalod.voxelize`, `cudalod.render` | `simlod.reset`, `simlod.construct`, `simlod.render` |
+| | `flat` | `remolod` | `simlod` |
+| --- | --- | --- | --- |
+| role | control / ground truth | **ours — the research** | comparison, progressive |
+| may be edited | rarely | yes, freely | **no** |
+| residency | whole cloud required | 50-slot wrapping ring | 50-slot wrapping ring |
+| build | nothing; latches a pointer | one bounded launch per frame + accumulate | one bounded launch per frame |
+| structure | none | octree, 128³ 1-bit occupancy grid + `NodeAccum[]` | octree, 128³ 1-bit occupancy grid per inner node |
+| sample storage | array slices | chunk lists | chunk lists |
+| selection | every 64k slice is visible | disjoint frontier, no mask needed | disjoint frontier, no mask needed |
+| draw list capacity | 32,768 | 131,072 | 131,072 |
+| point ceiling | fits in budget | none | none |
+| scopes | `flat.render` | `remolod.reset`, `remolod.construct`, `remolod.accumulate`, `remolod.render` | `simlod.reset`, `simlod.construct`, `simlod.render` |
 
 `flat` is deliberately the smallest possible `ILodPipeline` and is the reference for writing a
 new one. It is also not a placeholder: it is the image-quality ground truth, the upper bound on
@@ -273,29 +273,22 @@ That is the intended starting point: the two pipelines build identical trees tod
 difference between them is attributable to the passes around construction. Refinement is what
 will make the fork diverge, and the diff against `kernels/simlod/` is what will explain how.
 
-**The two selection metrics are not yet interchangeable.** Both accept `lodPixelBudget`, but
-SimLOD's pass projects all eight corners and takes the screen AABB while CudaLOD's estimates
-from the node centre, so they do not interpret the budget identically. Each kernel still
-carries its native metric behind `REMO_LOD_SIMLOD_NATIVE` / `REMO_LOD_CUDALOD_NATIVE` for
-validating a port against published behaviour, but no host code populates
+Both selection passes accept `lodPixelBudget`, projecting all eight corners and taking the
+screen AABB. SimLOD's native metric is still carried behind `REMO_LOD_SIMLOD_NATIVE` for
+validating the port against published behaviour, but no host code populates
 `KernelProgramDesc::defines`, so that path is currently unreachable.
-
-`cudalod` faults on the synthetic fixture with `CUDA_ERROR_ILLEGAL_ADDRESS` in the split
-kernel. `PipelineRegistry::unsupportedReason` refuses it for that input on purpose — a device
-fault kills the context outright, so a single GUI click would otherwise take the session down.
 
 ---
 
 ## 5. Device memory and the two allocators
 
 The shell computes **one** `DeviceBudget` — `0.85 × (freeAtStartup − 512 MB)` — and hands the
-same number to every pipeline. This replaces two upstream land grabs (SimLOD takes 80% of
-whatever happens to be free; CudaLOD takes a hardcoded slab). Neither is a budget, and the
-first makes a run depend on what else was on the GPU at the time.
+same number to every pipeline. This replaces upstream's land grab (SimLOD takes 80% of
+whatever happens to be free), which is not a budget and makes a run depend on what else was
+on the GPU at the time.
 
 Switching pipelines is **exclusive**: the outgoing one releases before the incoming one
-allocates, so both are offered the same bytes. There is no way to hand SimLOD's chunked
-octree to CudaLOD's contiguous-slice traversal anyway — a switch always means rebuild.
+allocates, so both are offered the same bytes. A switch always means rebuild.
 
 [kernels/shared/remo_alloc.cuh](../kernels/shared/remo_alloc.cuh) has two allocators:
 
@@ -326,7 +319,7 @@ Timing is **shell-owned**, per Stage 1 of [plans/02_ProfilingTools.md](../plans/
   the one way back into the defect this layer removed.
 - **A scope with no samples is absent, not `0.00`.** `GpuProfiler::find()` returns null,
   `timingRow()` prints "not measured", `BuildTotals::measured` says so. Previously
-  `SimlodPipeline::render` and `CudalodPipeline::render` never recorded anything and the GUI
+  `SimlodPipeline::render` never recorded anything and the GUI
   printed a plausible `0.00` in the same format as a real measurement.
 - **Two regimes, never pooled.** `--strict-timing` synchronises and attributes a sample to the
   frame that produced it; the default harvests whenever `cuEventQuery` says ready. Samples are
@@ -334,13 +327,11 @@ Timing is **shell-owned**, per Stage 1 of [plans/02_ProfilingTools.md](../plans/
 - The profiler keeps a **distribution** — Welford mean/variance plus a 4096-sample ring for
   order statistics — not a running sum. A progressive builder produces a long tail by
   construction, so a mean over frame times is dominated by it.
-- **Scope names are the data format** (`simlod.construct`, `cudalod.voxelize`, …). They become
+- **Scope names are the data format** (`simlod.construct`, `remolod.accumulate`, …). They become
   column names in the benchmark output; renaming one breaks comparison against captured runs.
 
 `--dump-frame` prints the full per-scope table alongside the structural counts, which is what
-a scripted run asserts on. That table reproduces the CudaLOD reference numbers for strategy 0
-within ~2% (split 4.99 ms against 5.1, voxelize 4.08 against 4.1) — the oracle saying the
-instrument itself is right. See [bench/reference/README.md](../bench/reference/README.md).
+a scripted run asserts on. See [bench/reference/README.md](../bench/reference/README.md).
 
 ---
 
@@ -369,7 +360,7 @@ like plain C++. Inherited from upstream and kept, but it means these files will 
 under `nvcc` as-is.
 
 Each pipeline declares its link groups in a **`programs.txt`**, which `--check-kernels` reads.
-This exists because most of CudaLOD's `.cu` files are `#include` fragments that are not
+This exists because a `.cu` file can be an `#include` fragment that is not
 independently compilable — scanning for `.cu` files reports pages of errors about code that is
 perfectly fine in context, and filenames do not distinguish the two cases.
 
@@ -401,16 +392,15 @@ the hottest path and races the two writes. It works because for non-negative IEE
 the bit pattern orders like the value — which is why `remoProject` *rejects* `w <= 0` rather
 than clamping.
 
-Note that the shared path is what makes the comparison possible at all. Upstream's two
-renderers differ in ways unrelated to LOD: SimLOD uses this packed `uint64` with a
-divide-by-count resolve, CudaLOD a `uint32` depth buffer plus a 16 byte/pixel accumulator with
-a Gaussian 3×3 splat resolve. Feed those the same octree and the images still differ.
+Note that the shared path is what makes the comparison possible at all. Upstream
+renderers differ in ways unrelated to LOD — SimLOD's uses this packed `uint64` with a
+divide-by-count resolve — so feeding two upstream renderers the same octree would still give
+different images.
 
 **The wireframe** (`--show-bounds`, `--hide-points`) draws one cube per emitted `DrawItem`,
 coloured by level with the same hash colour-by-LOD gives the samples, so a node's box and its
 contents match. It draws the *cut* rather than inferring it from sample colours, which makes
-the selection difference directly visible: SimLOD's frontier tiles disjointly, CudaLOD's
-parent-and-child visibility nests. There is no `Lines` buffer — one thread per cube *edge*,
+the selection directly visible: SimLOD's frontier tiles disjointly. There is no `Lines` buffer — one thread per cube *edge*,
 straight from `DrawItem` to pixels, because a 131k-item frontier would otherwise want ~50 MB
 of vertices to describe cubes derivable from a few bytes each. It is drawn after EDL so the
 overlay is not lit by its own edges, and depth-tested through the shared framebuffer so an
@@ -431,12 +421,10 @@ There is **no test suite yet** — `tests/unit/` is empty and `REMOBENCH_BUILD_T
 | `--list-datasets` | the dataset scan and the `.simlod` point counts, without a window |
 | `--switch-to` / `--switch-after` | the runtime pipeline-switch path, from a script |
 | `--show-bounds` / `--hide-points` | the structural view, from a script |
-| `bench/reference/` | upstream structural counts and timings the ports are validated against |
+| `bench/reference/` | structural counts the pipelines are validated against |
 
 The pattern to preserve: **a GUI-only code path is an untested code path.** Every control
-should be reachable from the command line. CudaLOD's sampling strategy is the outstanding
-violation — it is still GUI-only, so only strategy 0 of the reference oracle can be checked
-from a script.
+should be reachable from the command line.
 
 RemoBench also **fails fast on a device fault**, exiting and naming the kernel. Continuing
 previously produced a cascade of errors, then host heap corruption, then a SIGSEGV in a
@@ -447,7 +435,7 @@ file-watcher thread — a trail pointing nowhere near the cause.
 ## 10. Where the unbuilt work lands
 
 It all lands in **`kernels/remolod/`** — RemoLOD is the pipeline the research is about, and
-`simlod`/`cudalod` are comparison baselines that stay byte-identical to their submodules.
+`simlod` is the comparison baseline that stays byte-identical to its submodule.
 
 The project is five kernels. Three exist; the last two are the work.
 
@@ -499,9 +487,9 @@ The short list of things that break the project rather than merely the build.
    counted anywhere.
 5. **Scope names are stable.** Renaming one breaks comparison against captured runs.
 6. **Vendored device code stays byte-identical**, and `make check-vendored` enforces it.
-   `simlod` and `cudalod` are comparison baselines; they are worth having only while they
-   still reproduce their published numbers. RemoLOD **forks** into `kernels/remolod/` rather
-   than editing them, and notes about a vendored file go in
+   `simlod` is the comparison baseline; it is worth having only while it
+   still reproduces its published numbers. RemoLOD **forks** into `kernels/remolod/` rather
+   than editing it, and notes about a vendored file go in
    [kernels/simlod/VENDORED.md](../kernels/simlod/VENDORED.md), not in the file. Check
    [THIRD_PARTY.md](../THIRD_PARTY.md) before copying anything new — one upstream file is
    CC BY-NC-SA and is deliberately unused.
@@ -517,9 +505,8 @@ The short list of things that break the project rather than merely the build.
    to make that class of mistake unrepresentable.
 8. **Fail fast on device faults.** Do not add a "continue anyway" path.
 9. **Nothing GUI-only.** New controls get a command-line route.
-10. **Never quote a throughput figure without naming the regime**, and for CudaLOD the sampling
-    strategy — `WEIGHTED_NEIGHBORHOOD` voxelizes ~13× slower than `FIRST_COME` for a
-    bit-identical tree.
+10. **Never quote a throughput figure without naming the regime**, and for SimLOD the batch
+    size and the device-side time budget.
 
 ---
 
@@ -529,7 +516,7 @@ The short list of things that break the project rather than merely the build.
 | --- | --- |
 | what is the pipeline contract | [include/remo/ILodPipeline.h](../include/remo/ILodPipeline.h) |
 | how do I write a pipeline | [src/pipelines/FlatPipeline.cpp](../src/pipelines/FlatPipeline.cpp) + [kernels/flat/flat_render.cu](../kernels/flat/flat_render.cu) |
-| which pipelines may I change | [CLAUDE.md](../CLAUDE.md#the-four-pipelines-and-which-ones-you-may-touch), [kernels/simlod/VENDORED.md](../kernels/simlod/VENDORED.md) |
+| which pipelines may I change | [CLAUDE.md](../CLAUDE.md#the-three-pipelines-and-which-ones-you-may-touch), [kernels/simlod/VENDORED.md](../kernels/simlod/VENDORED.md) |
 | what crosses to the device | [include/remo/HostDeviceCommon.h](../include/remo/HostDeviceCommon.h) |
 | how does selection reach the rasteriser | [kernels/shared/remo_draw.cuh](../kernels/shared/remo_draw.cuh) |
 | how is timing recorded | [include/remo/GpuProfiler.h](../include/remo/GpuProfiler.h), [plans/02_ProfilingTools.md](../plans/02_ProfilingTools.md) |

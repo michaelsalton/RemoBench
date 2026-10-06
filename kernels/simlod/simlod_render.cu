@@ -3,13 +3,12 @@
 // Replaces upstream's render.cu (1356 lines). Only the SELECTION half is ported, because
 // that is the part under study; everything after it -- projection, splatting, the packed
 // uint64 atomicMin depth test, EDL, the surface resolve -- comes from kernels/shared and is
-// identical to every other pipeline. See kernels/cudalod/cudalod_render.cu for the same
-// split on the other side of the comparison.
+// identical to every other pipeline.
 //
-// WHAT MAKES SIMLOD'S SELECTION DIFFERENT, and why it needs no octant mask:
+// WHY SIMLOD'S SELECTION NEEDS NO OCTANT MASK:
 //
-// CudaLOD marks every node above a size threshold visible, so a parent and its children can
-// both be drawn and the parent must mask away octants its children already cover. SimLOD
+// A selection that marks every node above a size threshold visible draws a parent and its
+// children together, so the parent must mask away octants its children already cover. SimLOD
 // instead emits a DISJOINT frontier directly (render.cu:904-933):
 //
 //   large inner node  -> emit each child that is visible and NOT large
@@ -47,7 +46,7 @@ static_assert(sizeof(Point) == sizeof(remo::Point),
               "SimLOD's Point must match remo::Point for the shared rasteriser");
 
 // Leaves and inner nodes both store samples as a linked list of POINTS_PER_CHUNK Chunks, so
-// one walker covers both. This is the case the template Walker exists for -- CudaLOD's
+// one walker covers both. This is the case the template Walker exists for -- flat's
 // samples are contiguous slices instead.
 using SimlodWalker = remo::RemoChunkedWalker<Chunk, POINTS_PER_CHUNK>;
 

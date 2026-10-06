@@ -387,8 +387,7 @@ void applyTranslation(CloudMeta& meta, std::vector<Point>& points) {
 // a coordinate pass they are just arithmetic, and the box is final before anything is
 // uploaded. That matters more than the saved read: boxSize sizes the octree root cube,
 // so a box that grows mid-stream invalidates every node already built, and nothing on
-// the device will complain -- CudaLOD clamps the cell index and SimLOD's float->uint32
-// conversion saturates, so out-of-box points pile into cell 0 instead of faulting.
+// the device will complain -- SimLOD's float->uint32 conversion saturates, so out-of-box points pile into cell 0 instead of faulting.
 //
 enum class BoundsFix { Settled, Rescan, Failed };
 

@@ -1,25 +1,24 @@
 # RemoBench
 
 A real-time LOD generation and rendering program for lidar point clouds. It extends
-SimLOD and borrows from CudaLOD. **The project's goal is to make SimLOD's octree
+SimLOD. **The project's goal is to make SimLOD's octree
 construction detail-aware** — geometry analysis driving per-node sample budgets and
 depth, computed online while the cloud is still streaming in.
 
 See [README.md](README.md) for the idea, the kernel architecture, build details and
 current status.
 
-## The four pipelines, and which ones you may touch
+## The three pipelines, and which ones you may touch
 
 | id | role | may be changed |
 | --- | --- | --- |
 | `remolod` | **RemoLOD — this project's own pipeline.** The detail-aware work lives here. | yes, freely |
 | `simlod` | external comparison baseline, progressive build | **no** |
-| `cudalod` | external comparison baseline, batch build | **no** |
 | `flat` | the control condition: no LOD, every point drawn | rarely |
 
-**RemoLOD may pull anything it needs out of the comparison pipelines, but never changes
-them.** They are only worth having while they still reproduce their published numbers
-against `bench/reference/`; an edit to either destroys the baseline the research is
+**RemoLOD may pull anything it needs out of the comparison pipeline, but never changes
+it.** SimLOD is only worth having while it still reproduces its published numbers
+against `bench/reference/`; an edit to it destroys the baseline the research is
 measured against. So RemoLOD *forks* what it needs into `kernels/remolod/` and changes the
 fork. Reading a vendored header (`#include "../simlod/math.cuh"`) is pulling, not changing,
 and is fine.
@@ -114,7 +113,7 @@ so the cloud is never on the host either; `.laz` decodes sequentially with no se
 whole-cloud resident.
 
 **Compare structural counts, not frames, for anything with an octree.** Only `flat` is
-run-to-run deterministic. `simlod`, `remolod` and `cudalod` all sample a voxel's colour from
+run-to-run deterministic. `simlod` and `remolod` both sample a voxel's colour from
 the first point to reach its cell, so which *thread* gets there first decides the colour, and
 two runs of the same binary on the same file produce different images. That is first-come
 sampling doing exactly what the README criticises it for, and it is one of the things colour
@@ -133,13 +132,13 @@ is present.
 | `src/shell/` | Window, orbit camera, the two ImGui panels, pipeline registry |
 | `src/cuda/` | NVRTC wrapper, CUDA context, GL interop |
 | `src/io/` | Point cloud readers |
-| `src/pipelines/` | Host side of each pipeline (flat, remolod, cudalod, simlod) |
+| `src/pipelines/` | Host side of each pipeline (flat, remolod, simlod) |
 | `kernels/shared/` | Rasteriser + allocators every pipeline includes — **shared, keep it that way** |
 | `kernels/remolod/` | **RemoLOD's device code.** Yours to change. Forked octree + the accumulator |
-| `kernels/{simlod,cudalod}/` | Comparison baselines. Vendored byte-identical — **do not edit** |
+| `kernels/simlod/` | Comparison baseline. Vendored byte-identical — **do not edit** |
 | `kernels/CudaPrint/` | Vendored from SimLOD, at this path so its `../CudaPrint/` include resolves unchanged |
 | `kernels/flat/` | The no-LOD control |
-| `bench/check_vendored.sh` | Asserts the baselines still match their submodules |
+| `bench/check_vendored.sh` | Asserts the baseline still matches its submodule |
 | `bench/reference/` | Upstream baseline numbers the ports are validated against |
 | `plans/` | Research direction and staged implementation plans |
 | `references/` | Source papers |
@@ -182,8 +181,7 @@ proposing a design that assumes otherwise.
 - **Colour averaging has a memory wall.** The occupancy grid is 1 bit per cell (256 KB
   per inner node at 128³). An RGBA-sum grid at the same resolution would be ~16 MB
   *per node*. Filtering therefore needs a sparse accumulator keyed off the voxel
-  backlog, not a dense per-cell one — or it pays CudaLOD's cost (3.2× device memory,
-  ~13× voxelisation time).
+  backlog, not a dense per-cell one.
 - **Collapsing needs a grid pool first.** Point/voxel chunks are already recycled
   through `chunkQueue` when a leaf splits, but the 256 KB `OccupancyGrid` allocated on
   split is never freed. There is nothing to return it to.
@@ -210,23 +208,16 @@ proposing a design that assumes otherwise.
   coarser rule it used to be (snap down to a power of two) left a 1.3 km UTM cloud sitting
   169 km off origin, which sized the root cube at 170424 units and collapsed 36M points
   into 29 nodes with 7.04M in one leaf. Any new reader must land every point in
-  `[0, boxSize]`; nothing on the device will complain if it doesn't, because CudaLOD
-  clamps the cell index and SimLOD's float→uint32 conversion saturates, so out-of-box
+  `[0, boxSize]`; nothing on the device will complain if it doesn't, because SimLOD's
+  float→uint32 conversion saturates, so out-of-box
   points pile into cell 0 instead of faulting. `loadLasCloud` therefore checks the
   observed bounds itself and re-reads against a corrected box.
 
 ## Reporting numbers
 
-- **Always name CudaLOD's sampling strategy when quoting a throughput figure.** The tree
-  is bit-identical across all four, but `WEIGHTED_NEIGHBORHOOD` voxelizes ~13× slower
-  than `FIRST_COME` and needs 3.2× the device memory. An unqualified "CudaLOD does X
-  MP/s" is meaningless. The same will be true of any SimLOD number without the batch
-  size and the device-side time budget.
-- **The current pipeline comparison is not a clean quality A/B.** Both selection passes
-  take the shared pixel budget, but SimLOD's projects all eight corners and takes the
-  screen AABB while CudaLOD's estimates from the node centre, so they do not interpret
-  it identically. Do not present those numbers as a quality result.
-- The native metrics (`REMO_LOD_SIMLOD_NATIVE`, `REMO_LOD_CUDALOD_NATIVE`) exist in the
+- **Always name the batch size and the device-side time budget** when quoting a SimLOD
+  throughput figure. Without them the number is meaningless.
+- The native metric (`REMO_LOD_SIMLOD_NATIVE`) exists in the
   kernels for validating a port against its published behaviour, but no pipeline
   populates `KernelProgramDesc::defines`, so that path is currently unreachable from the
   host.
@@ -247,9 +238,6 @@ proposing a design that assumes otherwise.
 
 ## Known traps
 
-- **CudaLOD faults on `--synthetic`** with `CUDA_ERROR_ILLEGAL_ADDRESS` in the split
-  kernel, at every point count tried. Not root-caused; coplanarity and bbox-boundary
-  causes ruled out. The pipeline is refused for that fixture on purpose. Use a real cloud.
 - A device fault is unrecoverable, so RemoBench exits immediately naming the kernel rather
   than continuing. Continuing previously produced a cascade of errors, then host heap
   corruption, then a SIGSEGV in a file-watcher thread — a trail pointing nowhere near the
@@ -257,9 +245,7 @@ proposing a design that assumes otherwise.
 - A GUI-only code path is an untested code path. `--switch-to` / `--switch-after`,
   `--dump-frame` and `--remolod-no-accum` exist so those paths are scriptable; keep new
   controls reachable from the command line, and give a pipeline-specific readout a
-  `diagnostics()` line so `--dump-frame` prints it. **CudaLOD's sampling strategy is still
-  GUI-only**, which is why only strategy 0 of the `bench/reference/` oracle can be checked
-  from a script; `--bench` (Stage 2 of `plans/02_ProfilingTools.md`) has to reach it.
+  `diagnostics()` line so `--dump-frame` prints it.
 - **A kernel signature is not covered by any check.** `--check-kernels` compiles, it does not
   launch, and the driver only rejects an argument-count mismatch at `cuLaunchKernel`. Passing
   kernel arguments as one shared struct (see `remo::AccumArgs`) makes the whole class of
@@ -278,9 +264,9 @@ Stage 1 of `plans/02_ProfilingTools.md` has landed, so timing is now shell-owned
   Do not reintroduce a code path that formats an unmeasured scope as a number.
 - **Strict and deferred samples are never pooled.** `--strict-timing` synchronises and
   attributes a sample to the frame that produced it; the default reads whenever
-  `cuEventQuery` says ready. Both regimes now produce render times for all three
-  pipelines. Name the regime whenever quoting a number.
-- Scope names are the data format (`simlod.construct`, `cudalod.voxelize`, …). Renaming
+  `cuEventQuery` says ready. Both regimes now produce render times for every
+  pipeline. Name the regime whenever quoting a number.
+- Scope names are the data format (`simlod.construct`, `remolod.accumulate`, …). Renaming
   one breaks comparison against runs already captured.
 
 ## Deeper context — read when relevant
@@ -295,4 +281,4 @@ Stage 1 of `plans/02_ProfilingTools.md` has landed, so timing is now shell-owned
   or `GpuProfiler`.** Stage 2 (`--bench`, NDJSON) and Stage 3 (`DeviceTimeline` under
   `-DREMO_PROFILE`) are still open.
 - `bench/reference/README.md` — capture methodology and the machine baselines were taken on.
-- `references/` — source papers (SimLOD, CudaLOD).
+- `references/` — source papers (SimLOD).

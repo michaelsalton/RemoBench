@@ -171,7 +171,6 @@ compiles and links; only `cuLaunchKernel` rejects an argument-count mismatch.
 |---|---|
 | structural counts, 36M, with and without the flag | **4,137 nodes / 12,742,751 voxels** — unchanged |
 | `simlod` | 4,137 / 12,742,751 — still identical to RemoLOD |
-| `cudalod` | 2,252 / 12,742,500 — matches `bench/reference/` |
 | `make check-vendored` | 9 kernels byte-identical |
 | `DeviceTimeline::overflow` | 0 in every run (160 marks used of 256) |
 

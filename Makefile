@@ -131,19 +131,16 @@ SIMLOD_GPU_ARCH ?= compute_120
 SIMLOD_SRC   := external/SimLOD
 SIMLOD_BUILD := $(SIMLOD_SRC)/build
 SIMLOD_PATCH := patches/simlod-linux-sm120.patch
-CUDALOD_SRC  := external/CudaLOD
 
-.PHONY: subrepos simlod simlod-check simlod-patch simlod-build simlod-clean cudalod
+.PHONY: subrepos simlod simlod-check simlod-patch simlod-build simlod-clean
 
 subrepos:
 	@echo "Subrepo targets:"
 	@echo "  make simlod    build + run SimLOD   ($(SIMLOD_SRC))"
-	@echo "  make cudalod   build + run CudaLOD  ($(CUDALOD_SRC))"
-	@echo "                 requires CUDALOD_LAS=/path/to/cloud.las"
 	@echo
 	@echo "Overrides:"
 	@echo "  CUDA_PATH=$(CUDA_PATH)"
-	@echo "  SIMLOD_GPU_ARCH=$(SIMLOD_GPU_ARCH)  CUDALOD_GPU_ARCH=$(CUDALOD_GPU_ARCH)"
+	@echo "  SIMLOD_GPU_ARCH=$(SIMLOD_GPU_ARCH)"
 
 # --- SimLOD ---------------------------------------------------------------
 
@@ -166,9 +163,8 @@ simlod-check:
 # and a non-hardcoded GPU arch (upstream pins compute_89 / Ada).
 #
 # --ignore-whitespace on both the check and the apply: upstream sources are
-# CRLF, and cudalod-linux-port.patch is LF-only. Without it the reverse-check
-# never detects an already-applied patch, so a second `make cudalod` falls
-# through to a forward apply that also fails ("already exists in working
+# CRLF, and the patch is LF-only. Without it the reverse-check never detects
+# an already-applied patch, so a second run falls through to a forward apply that also fails ("already exists in working
 # directory") -- i.e. the target only ever worked once.
 GIT_APPLY := git apply --ignore-whitespace --whitespace=nowarn
 
@@ -198,72 +194,3 @@ simlod: simlod-build
 
 simlod-clean:
 	rm -rf $(SIMLOD_BUILD)
-
-# --- CudaLOD --------------------------------------------------------------
-#
-# Upstream ships only Visual Studio project files, so CMakeLists.txt is ours
-# (see patches/cudalod-linux-port.patch). Note the build dir is cmake-build,
-# not build/ -- upstream tracks build/ for the .sln.
-
-CUDALOD_BUILD    := $(CUDALOD_SRC)/cmake-build
-CUDALOD_PATCH    := patches/cudalod-linux-port.patch
-CUDALOD_GPU_ARCH ?= compute_120
-# Bytes for the CudaLOD device slab. The patch defaults to 4GB, which suits a
-# 16GB card: 36M points only watermark at ~1.4GB, while >= 10GB builds the LOD
-# correctly but then floods "illegal memory access" once rendering starts.
-# Upstream's own value was 15GB (assumes a 24GB+ card).
-CUDALOD_MAX_BUFFER ?=
-
-# Default input: the smallest .las under data/ (ls -S -r sorts ascending by
-# size). The larger clouds need MAX_BUFFER_SIZE raised past what 16GB of VRAM
-# allows. Override per-run with `make cudalod CUDALOD_LAS=...`.
-CUDALOD_LAS ?= $(shell ls -S -r data/*.las data/*/*.las 2>/dev/null | head -1)
-
-.PHONY: cudalod cudalod-check cudalod-patch cudalod-build cudalod-clean
-
-cudalod-check:
-	@test -d $(CUDALOD_SRC)/src || { \
-		echo "error: $(CUDALOD_SRC) is empty."; \
-		echo "       run: git submodule update --init --recursive"; exit 1; }
-	@command -v cmake >/dev/null || { \
-		echo "error: cmake not found."; \
-		echo "       run: sudo apt install cmake"; exit 1; }
-	@test -d $(CUDA_PATH)/include || { \
-		echo "error: no CUDA toolkit at $(CUDA_PATH)"; \
-		echo "       run: sudo apt install cuda-toolkit-13-1"; exit 1; }
-	@test -e /usr/include/GL/glu.h || { \
-		echo "error: GL/glu.h not found."; \
-		echo "       run: sudo apt install libglu1-mesa-dev"; exit 1; }
-
-cudalod-patch:
-	@cd $(CUDALOD_SRC) && \
-	if $(GIT_APPLY) --reverse --check ../../$(CUDALOD_PATCH) 2>/dev/null; then \
-		echo "CudaLOD: patch already applied"; \
-	else \
-		$(GIT_APPLY) ../../$(CUDALOD_PATCH) && echo "CudaLOD: patch applied"; \
-	fi
-
-$(CUDALOD_BUILD)/CMakeCache.txt: | cudalod-check cudalod-patch
-	cmake -S $(CUDALOD_SRC) -B $(CUDALOD_BUILD) \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-		$(if $(CUDALOD_MAX_BUFFER),-DCUDALOD_MAX_BUFFER_SIZE=$(CUDALOD_MAX_BUFFER),)
-
-cudalod-build: $(CUDALOD_BUILD)/CMakeCache.txt
-	cmake --build $(CUDALOD_BUILD) --parallel
-
-# CudaLOD takes no arguments and its input path is hardcoded upstream; the
-# patch adds a CUDALOD_LAS override.
-cudalod: cudalod-build
-	@test -n "$(CUDALOD_LAS)" || { \
-		echo "error: no point cloud found - CudaLOD needs one."; \
-		echo "       drop a .las under data/, or run:"; \
-		echo "       make cudalod CUDALOD_LAS=/path/to/cloud.las"; exit 1; }
-	@test -f "$(CUDALOD_LAS)" || { \
-		echo "error: no such file: $(CUDALOD_LAS)"; exit 1; }
-	cd $(CUDALOD_BUILD) && \
-	CUDA_PATH=$(CUDA_PATH) CUDALOD_GPU_ARCH=$(CUDALOD_GPU_ARCH) \
-	CUDALOD_LAS=$(abspath $(CUDALOD_LAS)) ./CudaLOD
-
-cudalod-clean:
-	rm -rf $(CUDALOD_BUILD)

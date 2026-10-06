@@ -11,7 +11,6 @@
 #include "remo/CudaCheck.h"
 #include "remo/unsuck.hpp"
 #include "io/LasReader.h"
-#include "pipelines/CudalodPipeline.h"
 #include "pipelines/FlatPipeline.h"
 #include "pipelines/RemolodPipeline.h"
 #include "pipelines/SimlodPipeline.h"
@@ -92,7 +91,6 @@ void App::registerPipelines() {
 		p->setFixedDepth(m_options.remolodFixedDepth);
 		return p;
 	});
-	m_registry.add([this] { return std::make_unique<CudalodPipeline>(*m_cuda); });
 	m_registry.add([this] { return std::make_unique<SimlodPipeline>(*m_cuda); });
 }
 
