@@ -159,7 +159,6 @@ void FlatPipeline::render(const FrameContext& frame) {
 		m_stats.allocOverflow = diagnostics.allocOverflow != 0;
 		m_stats.numVisibleNodes = diagnostics.drawItems;
 		m_stats.numVisiblePoints = diagnostics.drawSamples;
-		m_stats.bytesHighWater = diagnostics.allocHighWater;
 	}
 }
 

@@ -25,6 +25,12 @@
 static_assert(sizeof(Node) == remo::simlod::kNodeBytes,
               "sizeof(Node) changed upstream; update kNodeBytes in simlod_layout.h "
               "(it sizes the host's node pool)");
+// NVRTC has no constant offsetof, so this checks the members declared before `level`
+// instead. It catches one being resized, added or removed, not a reorder.
+static_assert(sizeof(((Node*)0)->children) + sizeof(((Node*)0)->counter) +
+                  sizeof(((Node*)0)->numPoints) == remo::simlod::kNodeLevelOffset,
+              "Node::level moved upstream; update kNodeLevelOffset in simlod_layout.h "
+              "(the host reads octree depth from it)");
 static_assert(BATCH_STREAM_SIZE == remo::simlod::kBatchStreamSize,
               "BATCH_STREAM_SIZE changed upstream; update kBatchStreamSize in "
               "simlod_layout.h (it sizes the reset kernel's batchSizes buffer and caps "

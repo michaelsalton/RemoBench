@@ -5,6 +5,7 @@
 
 #include "remo/CudaModularProgram.h"
 #include "remo/ILodPipeline.h"
+#include "remo/OctreeDepth.h"
 
 namespace remo {
 
@@ -63,6 +64,7 @@ private:
 	uint64_t m_numPoints = 0;
 
 	PipelineStats m_stats;
+	OctreeDepth m_depth;
 	int m_blockSize = 256;
 
 	uint32_t m_batchesConsumed = 0;

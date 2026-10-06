@@ -548,6 +548,7 @@ bool App::dumpFrame(const std::string& path) {
 		       formatNumber(static_cast<double>(s.numNodes)).c_str(),
 		       formatNumber(static_cast<double>(s.numInner)).c_str(),
 		       formatNumber(static_cast<double>(s.numLeaves)).c_str());
+		printf("  octree depth        %u (root = 0)\n", s.maxDepth);
 		printf("  visible samples     %s\n",
 		       formatNumber(static_cast<double>(s.numVisiblePoints +
 		                                       s.numVisibleVoxels)).c_str());
@@ -591,10 +592,6 @@ bool App::dumpFrame(const std::string& path) {
 		       m_frameTimeStats.last(), m_frameTimeStats.median(),
 		       m_frameTimeStats.percentile(0.95),
 		       static_cast<unsigned long long>(m_frameTimeStats.count()));
-
-		printf("  device high water   %.3f GB of %.3f GB\n",
-		       static_cast<double>(s.bytesHighWater) / 1e9,
-		       static_cast<double>(s.bytesAllocated) / 1e9);
 
 		// Predicted against observed, so the 26 B/pt floor is a claim the dump checks
 		// rather than a number quoted from a paper. A large disagreement means the

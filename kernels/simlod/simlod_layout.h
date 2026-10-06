@@ -37,6 +37,10 @@ constexpr unsigned int kMaxNodes = 200000u;
 // sizeof(Node). Verified against the real struct by simlod_bridge.cuh.
 constexpr unsigned int kNodeBytes = 152u;
 
+// offsetof(Node, level), so the host can read depth out of the pool (remo/OctreeDepth.h).
+// Verified against the real struct by simlod_bridge.cuh.
+constexpr unsigned int kNodeLevelOffset = 72u;
+
 // Must equal BATCH_STREAM_SIZE in structures.cuh (asserted in simlod_bridge.cuh).
 //
 // UPSTREAM'S VALUE, and now also RemoBench's actual device ring depth.

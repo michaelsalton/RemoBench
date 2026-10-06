@@ -130,10 +130,9 @@ void App::drawStatsPanel() {
 		statRow("points", s.numPoints);
 		statRow("voxels", s.numVoxels);
 		statRow("nodes", s.numNodes);
+		if (s.numNodes > 0) statRow("octree depth", s.maxDepth);
 		statRow("visible nodes", s.numVisibleNodes);
 		statRow("visible samples", s.numVisiblePoints + s.numVisibleVoxels);
-		statRowF("scratch high water (MB)", "%.1f",
-		         double(s.bytesHighWater) / (1024.0 * 1024.0));
 		ImGui::EndTable();
 	}
 

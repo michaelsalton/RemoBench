@@ -6,6 +6,7 @@
 #include "remo/CudaModularProgram.h"
 #include "remo/HostDeviceCommon.h"
 #include "remo/ILodPipeline.h"
+#include "remo/OctreeDepth.h"
 #include "remo/RemoAccum.h"
 
 namespace remo {
@@ -88,6 +89,7 @@ private:
 	uint64_t m_numPoints = 0;
 
 	PipelineStats m_stats;
+	OctreeDepth m_depth;
 	int m_blockSize = 256;
 	static constexpr int kAccumBlockSize = 256;
 

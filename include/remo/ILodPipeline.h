@@ -93,6 +93,7 @@ struct PipelineStats {
 	uint32_t numNodes = 0;
 	uint32_t numInner = 0;
 	uint32_t numLeaves = 0;
+	uint32_t maxDepth = 0;  // deepest Node::level in the pool; root is 0
 	uint32_t maxPointsPerNode = 0;
 
 	uint32_t numVisibleNodes = 0;
@@ -100,7 +101,6 @@ struct PipelineStats {
 	uint64_t numVisibleVoxels = 0;
 
 	uint64_t bytesAllocated = 0;
-	uint64_t bytesHighWater = 0;
 	uint64_t bytesCapacity = 0;
 
 	uint64_t samplesPerLevel[24] = {};

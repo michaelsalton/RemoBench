@@ -343,13 +343,78 @@ above D take the whole subtree's count from the pyramid — and nothing faulted.
   and lands below this ceiling; if the estimate costs what the counting it replaces
   cost, none of this is reachable. That is Stage 4, and
   [plans/01](../plans/01_NoveltyAssessment.md) Recommendation 2 is what asks for it.
-- **Not validated past 36M**, for the same memory reason as `03` §9.
+- **~~Not validated past 36M~~** — now run on the full 350M cloud; see §9. The ceiling
+  holds (+40%), but at a different depth.
 - **The depth that wins is data-dependent.** D = 6 is the peak for morro_bay at this
   budget and nothing here says it transfers. A rule that picks 6 for this cloud and 7
   for another is the whole open problem, not a detail.
 - **Grid memory is a one-way ratchet in D.** Every node that becomes inner takes 256 KB
   that is never returned, and collapsing would need a grid pool that does not exist. A
   sweep value that is too deep is not recoverable within a session.
+
+## 9. 350M: the ceiling transfers, the depth does not
+
+morro_bay 350M (350,360,028 points), `.simlod`, RTX 5080, strict regime, accumulator off,
+`--remolod-phase-timings`, captured 2026-10-06. Baseline and D = 5, 6, 8 at
+`--device-budget 11G`; D = 7 at both 11G and 13G (see below). Five baseline runs, three
+per depth. Every arm reproduced its counts exactly in every run.
+
+| arm | budget | ingested | nodes | voxels | max pts/node | construct ms | **MP/s** | vs base |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| base | 11G | 100% | 40,689 | 128,052,063 | 49,938 | 441.7 | 793 | — |
+| D = 5 | 11G | 100% | 2,417 | 7,244,709 | **2,852,333** | 1,708.6 | 205 | −74% |
+| D = 6 | 11G | 100% | 9,537 | 29,318,496 | 896,604 | 561.8 | 624 | −21% |
+| **D = 7** | **13G** | **100%** | 40,097 | 107,974,931 | 264,944 | **314.9** | **1,113** | **+40%** |
+| D = 7 | 11G | 97.6% † | 39,113 | 105,382,071 | 264,944 | (305.3 phase sum) | 1,120 ‡ | — |
+| D = 8 | 11G | 46.8% † | 93,665 | 156,781,549 | 52,808 | (240.9 phase sum) | 681 ‡ | — |
+
+† Stopped on `memCapacityReached`. ‡ Rate over the phase sum, not the CUevent total: see
+the trap below. A truncated row describes a smaller tree and is not comparable to the
+complete ones.
+
+**The ceiling transfers almost exactly**: +40% here against +42% at 36M. **The depth that
+reaches it does not**: the peak moves from D = 6 to D = 7, and D = 6 — the 36M winner — is
+21% *slower* at 350M. That is §8's "the depth that wins is data-dependent" measured
+rather than predicted, and it makes the case for a predictor: a constant chosen on one
+cloud loses on the next one up.
+
+Where the D = 7 saving comes from, mean ms:
+
+| phase | base | D = 7 (13G) | Δ |
+|---|---:|---:|---:|
+| expand | 164.7 | 77.3 | **−87.4** |
+| — counting, iteration 0 | 88.2 | — | |
+| — counting, iterations 1..N | 56.9 (**13.0%** of construct) | — | |
+| — splitting | 20.2 | — | |
+| voxelSampling | 93.1 | 58.0 | −35.1 |
+| insertPoints | 108.7 | 116.4 | +7.7 |
+| insertVoxels | 40.3 | 32.4 | −7.9 |
+| allocPointChunks | 13.8 | 13.2 | −0.6 |
+| allocVoxelChunks | 15.2 | 13.6 | −1.6 |
+| phase sum | 436.2 | 311.2 | **−125.0** |
+
+The baseline counters at 350M: 351 batches, **3.21** expand iterations/batch, **316,661**
+spilled points/batch, 14.5 nodes split/batch. The re-counts are a *smaller* share than at
+36M (13.0% against 16–21.5%), contrary to `03` §9's expectation that `expand` would grow
+with depth — yet the arm saves the same fraction, because the descent leaving iteration 0
+and the spill windfall in `voxelSampling` scale with the cloud.
+
+**The shallow end fails worse at this size.** D = 5's 2,115 leaves average ~166k points and peak
+at 2.85M, and `insertPoints` walks each leaf's chunk list from the head per point: it is
+1,472 ms on its own. The fixed arm does not honour `MAX_POINTS_PER_NODE` (`plans/07` §13),
+and at 350M that is the difference between −74% and a win. D = 7 still carries
+265k-point leaves; `insertPoints` is the one phase it makes worse.
+
+**D = 7 needs more memory than the baseline.** At 11G it truncates at 97.6% while the
+baseline completes — the occupancy-grid ratchet again. At 13G it completes. So the +40%
+is bought with ~2 GB of budget, and on a card with a desktop running it may not fit.
+
+**Trap — a truncated build keeps launching.** After `memCapacityReached`, `remolod` still
+launches `kernel_construct` every frame; each launch returns in ~0.14 ms, but over a
+1500-frame `--dump-after` that is ~1,460 empty launches and ~200 ms added to the
+`remolod.construct` total. A CUevent-total MP/s on a truncated arm is therefore wrong by
+whatever `--dump-after` happened to be. Use the phase sum, which tracks the work (D = 7's is 305 ms at 97.6% and 311 ms at
+100%), or compare complete builds only.
 
 ## Related
 

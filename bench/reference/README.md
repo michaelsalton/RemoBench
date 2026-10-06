@@ -54,6 +54,41 @@ valid — smaller, not wrong.
 tree), so it does not fit a 6 GB budget at this size. The three-reader invariant is
 therefore checked at 36M, where all three give 4,137 nodes / 12,742,751 voxels.
 
+### The full cloud — `--device-budget 11G`
+
+Captured 2026-10-06 with 14.7 GB free (no heavy desktop load), driver 595.91.07. The first
+350M build on this machine to ingest every point. `.simlod` input, 1M-point batches through
+the 50-slot ring, `MAX_PROCESSING_TIME = 10 ms` per construct launch, strict regime.
+
+```sh
+./build/remobench --open data/morro_bay_350M/morro_bay_350M.simlod \
+    --pipeline simlod --device-budget 11G --strict-timing \
+    --dump-frame /tmp/x.ppm --dump-after 3000
+```
+
+| pipeline | accumulator | runs | points ingested | voxels | nodes (inner / leaves) | depth |
+|---|---|---|---|---|---|---|
+| `simlod` | n/a | 3 | 350,360,028 (100%) | 128,052,063 | 40,689 (5,086 / 35,603) | 9 |
+| `remolod` | off | 3 | 350,360,028 (100%) | 128,052,063 | 40,689 (5,086 / 35,603) | 9 |
+| `remolod` | on | 1 | 350,360,028 (100%) | 128,052,063 | 40,689 (5,086 / 35,603) | 9 |
+
+Counts identical in every run. Timing, `*.construct` CUevent totals:
+
+| pipeline | accumulator | construct ms (per run) | mean | launches | **MP/s** |
+|---|---|---|---:|---:|---:|
+| `simlod` | n/a | 438.5 / 430.9 / 436.0 | 435.1 | 41 | **805** |
+| `remolod` | off | 431.4 / 436.8 / 432.3 | 433.5 | 41 | **808** |
+| `remolod` | on | 433.2 + **92.0 accumulate** | 525.2 | 41 + 41 | 667 |
+
+The two pipelines are within run-to-run noise of each other, as they should be while the
+fork differs by one constant. The accumulator is 2.2 ms median per launch (1.4–3.1), i.e.
++21% on construct, and its checksum held: 350,360,028 folded of 350,360,028.
+
+With `--remolod-phase-timings` the same `remolod` build reads 441.7 ms / 793 MP/s (five
+runs, 787–797): the instrumented variant costs ~1.5%. Quote phase-timed and plain numbers
+separately. The per-phase breakdown and the fixed-depth sweep at this size are in
+[wiki/04_FixedDepthFindings.md](../../wiki/04_FixedDepthFindings.md) §9.
+
 ### The completion prediction is itself a check
 
 The dump prints observed ingest beside the prediction from the 26 B/pt floor
@@ -64,6 +99,7 @@ The dump prints observed ingest beside the prediction from the 26 B/pt floor
 | 6.00 GB (pinned) | 48.4% | 48.2% |
 | 7.05 GB (free VRAM) | 60.2% | 59.7% |
 | 7.07 GB (free VRAM) | 60.3% | 59.7% |
+| 11.00 GB (pinned) | 100.0% | 100.0% |
 
 Within a point throughout, which is what makes 26 B/pt safe to quote. A large disagreement
 would mean the coefficient is wrong for this build and should be re-derived before it is

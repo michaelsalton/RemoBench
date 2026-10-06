@@ -138,6 +138,10 @@ struct Node{
 #include "remolod_layout.h"
 static_assert(sizeof(Node) == remo::remolod::kNodeBytes,
               "update kNodeBytes in kernels/remolod/remolod_layout.h");
+// NVRTC has no constant offsetof: checks the members before `level`, not their order.
+static_assert(sizeof(((Node*)0)->children) + sizeof(((Node*)0)->counter) +
+                  sizeof(((Node*)0)->numPoints) == remo::remolod::kNodeLevelOffset,
+              "update kNodeLevelOffset in kernels/remolod/remolod_layout.h");
 static_assert(BATCH_STREAM_SIZE == remo::remolod::kBatchStreamSize,
               "update kBatchStreamSize in kernels/remolod/remolod_layout.h");
 static_assert(MAX_NODES_CAPACITY == remo::remolod::kMaxNodes,

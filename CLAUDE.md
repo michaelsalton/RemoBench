@@ -230,7 +230,8 @@ proposing a design that assumes otherwise.
   and are not comparable. Anything quoted from a truncated run needs the budget beside it.
 - **RemoLOD and SimLOD currently build identical trees** (4,137 nodes / 12,742,751 voxels on
   morro_bay 36M; 169,000,000 points / 59,548,545 voxels / 20,633 nodes on morro_bay 350M at
-  `--device-budget 6G`), because RemoLOD's forked octree kernel is still line-for-line
+  `--device-budget 6G`; the full 350,360,028 points / 128,052,063 voxels / 40,689 nodes at
+  `--device-budget 11G`), because RemoLOD's forked octree kernel is still line-for-line
   SimLOD's apart from one constant. That is the intended starting point: while it holds, any difference
   between the two pipelines is attributable to the passes around construction. When Refinement
   starts changing the tree, this stops being true and the fork's diff is what explains why.

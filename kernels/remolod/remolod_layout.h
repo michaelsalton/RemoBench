@@ -7,6 +7,9 @@ constexpr unsigned int kMaxNodes = 200000u;
 
 constexpr unsigned int kNodeBytes = 152u;
 
+// offsetof(Node, level), so the host can read depth out of the pool (remo/OctreeDepth.h).
+constexpr unsigned int kNodeLevelOffset = 72u;
+
 // The device ring depth, in 1M-point slots. Must equal BATCH_STREAM_SIZE in
 // remolod_structures.cuh, which static_asserts against this.
 //

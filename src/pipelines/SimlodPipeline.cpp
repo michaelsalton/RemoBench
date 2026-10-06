@@ -277,6 +277,7 @@ bool SimlodPipeline::build(PointSource& source, const FrameContext& frame) {
 		m_needsReset = false;
 		m_complete = false;
 		m_batchesConsumed = 0;
+		m_depth.reset();
 
 		// The reset kernel put the device's batch counter back to zero, so the
 		// producer has to go back to batch 0 too. Without this a rebuild keeps filling
@@ -351,11 +352,14 @@ void SimlodPipeline::readStats() {
 	// numbers survived. A build that stops on memCapacityReached never completes, and
 	// then the dump reports 0 visible nodes for a tree that is plainly on screen.
 
-	m_stats.bytesHighWater = s.allocatedBytes_persistent;
 	m_stats.bytesAllocated = m_persistentBytes + m_momentaryBytes + m_nodesBytes;
 	m_stats.memCapacityReached = s.memCapacityReached;
 
 	if (m_stats.numNodes >= kMaxNodes) m_stats.nodeCapacityReached = true;
+
+	m_depth.update(m_nodes, std::min(m_stats.numNodes, kMaxNodes), simlod::kNodeBytes,
+	               simlod::kNodeLevelOffset);
+	m_stats.maxDepth = m_depth.maxLevel();
 }
 
 void SimlodPipeline::ensureScratch(int width, int height) {
@@ -468,7 +472,6 @@ void SimlodPipeline::guiStats(const GpuProfiler& profiler) {
 		                       : 0.0;
 		row("throughput (build total)", "%.0f MP/s", mps);
 		row("persistent", "%.2f GB", double(m_persistentBytes) / 1e9);
-		row("high water", "%.2f GB", double(m_stats.bytesHighWater) / 1e9);
 		ImGui::EndTable();
 	}
 }
